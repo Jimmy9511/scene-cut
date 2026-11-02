@@ -2,6 +2,9 @@
 
 用法：python tools/build_all.py
 产物：dist/scene-cut/{scene-cut.exe, scene-cut-window.exe, WebView2*.dll, _internal/}
+
+解释器：优先用当前运行本脚本的 Python（CI 上没有 .venv，本地通常就是 .venv 里的）；
+若 `.venv` 存在且与当前解释器不同，仍以当前解释器为准，避免路径写死。
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PY = ROOT / ".venv" / "Scripts" / "python.exe"
+PY = Path(sys.executable)
 
 
 def run(cmd: list[str]) -> None:
@@ -22,6 +25,7 @@ def run(cmd: list[str]) -> None:
 
 
 def main() -> int:
+    print("python:", PY)
     run([str(PY), "-m", "PyInstaller", "--clean", "--noconfirm",
          "--distpath", "dist", "--workpath", "build", "scene-cut.spec"])
     run([str(PY), str(ROOT / "tools" / "build_window.py")])
