@@ -392,6 +392,7 @@ def main(argv: list[str] | None = None) -> int:
     shortcut = _write_url_shortcut(server.DATA_ROOT, url)
     print(f"  打不开窗口时，双击这个文件即可： {shortcut}", flush=True)
 
+    host_proc = None
     if not no_open and "--manual" in args:
         try:
             subprocess.run(["cmd", "/c", f'echo {url}| clip'], check=False)
@@ -403,7 +404,6 @@ def main(argv: list[str] | None = None) -> int:
     if not no_open:
         if not ready:
             print("警告：服务 30 秒内未就绪，窗口可能空白；请稍后在窗口里按 F5 刷新。", flush=True)
-        host_proc = None
         if "--tab" in args:
             opened = _open_tab_window(url)
         elif "--browser" in args:

@@ -1,8 +1,15 @@
 # scene-cut
 
+[![CI](https://github.com/Jimmy9511/scene-cut/actions/workflows/ci.yml/badge.svg)](https://github.com/Jimmy9511/scene-cut/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 视频切镜（镜头边界）自动检测与批量切段工具：自动找出硬切与渐变转场所在帧，帧级标记，全片预览可人工改点，按镜头批量切段落盘。
 
 面向**短素材批量**处理：导入一批片子 → 自动检测 → 抽查修正 → 一键批量导出。
+
+![界面](docs/screenshot.png)
+
+> 截图为内置演示素材（硬切 + 叠化），由 `python tools/make_demo_video.py` 生成。
 
 ## 功能
 
@@ -59,6 +66,23 @@ python tools\build_all.py
 ```
 
 窗口宿主是 8 KB 的 C# WinForms 程序（`host/WindowHost.cs`），用系统自带的 .NET Framework `csc.exe` 编译，运行时依赖系统 WebView2 Runtime。
+
+### 发布包
+
+```powershell
+python tools\package_release.py --version v0.9.0
+# => release\scene-cut-v0.9.0-win64.zip + SHA256SUMS.txt + RELEASE_NOTES.md
+```
+
+### ffmpeg（分发合规）
+
+随包分发的 ffmpeg 必须是 **LGPL** 构建（不含 x264/x265）：
+
+```powershell
+python tools\fetch_ffmpeg_lgpl.py   # 下载并放进 dist\scene-cut\_internal\_bin
+```
+
+开发机可以继续用系统里的 GPL 构建；但不要把它复制进发布产物。不随包提供 ffmpeg 时，只需在说明里要求用户自行安装。
 
 ## 工作原理
 
