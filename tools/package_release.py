@@ -70,6 +70,13 @@ def main() -> int:
 - 本包**不包含 ffmpeg**；如需随包分发，请使用 LGPL 构建并附源码链接
 - exe 未签名，首次运行会出现 SmartScreen 提示，选择“仍要运行”
 """
+
+    # 若仓库里写了该版本的发布说明（docs/releases/<tag>.md），直接用它作为 Release 正文
+    custom = ROOT / "docs" / "releases" / f"{args.version}.md"
+    if custom.exists():
+        notes = custom.read_text(encoding="utf-8")
+        print("使用自定义发布说明:", custom.relative_to(ROOT))
+
     (OUT / "RELEASE_NOTES.md").write_text(notes, encoding="utf-8")
     print(f"完成：{zip_path.name}  {zip_path.stat().st_size / 1e6:.0f} MB")
     print("SHA256:", digest)
