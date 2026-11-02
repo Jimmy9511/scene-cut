@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（如 v0.9.1）"
+        required: true
+        default: v0.9.1
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy==1.23.5 opencv-python==4.6.0.66 Pillow==9.3.0 scenedetect==0.7.2 requests==2.28.1 tqdm==4.66.1
+          pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu
+          pip install transnetv2-pytorch==1.0.5 pyinstaller==6.9.0
+        shell: pwsh
+
+      - name: 下载 WebView2 SDK
+        run: python tools/fetch_webview2.py
+        shell: pwsh
+
+      - name: 打包（PyInstaller + csc 窗口宿主）
+        run: python tools/build_all.py
+        shell: pwsh
+
+      - name: 确定版本号
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ github.event.inputs.version }}"
+          if (-not $v) { $v = "${{ github.ref_name }}" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: 生成 zip + 校验和
+        run: python tools/package_release.py --version ${{ steps.ver.outputs.version }}
+        shell: pwsh
+
+      - name: 发布（草稿）
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: ${{ steps.ver.outputs.version }}
+          body_path: release/RELEASE_NOTES.md
+          draft: true
+          files: |
+            release/*.zip
+            release/SHA256SUMS.txt

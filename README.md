@@ -5,11 +5,15 @@
 
 视频切镜（镜头边界）自动检测与批量切段工具：自动找出硬切与渐变转场所在帧，帧级标记，全片预览可人工改点，按镜头批量切段落盘。
 
+英文说明见 [README.en.md](README.en.md)。
+
 面向**短素材批量**处理：导入一批片子 → 自动检测 → 抽查修正 → 一键批量导出。
 
 ![界面](docs/screenshot.png)
 
 > 截图为内置演示素材（硬切 + 叠化），由 `python tools/make_demo_video.py` 生成。
+
+![导出](docs/screenshot-export.png)
 
 ## 功能
 
