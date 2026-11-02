@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 语法检查
+        run: python -m compileall -q app tools launcher.py run.py
+      - name: 静态检查（未定义名 / 语法级错误）
+        run: |
+          python -m pip install --quiet ruff
+          ruff check --select F821,F822,F823,F63,F7,E9 app tools launcher.py run.py
+
+  smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: 安装 ffmpeg
+        run: choco install ffmpeg -y --no-progress
+        shell: pwsh
+
+      - name: 安装依赖（不含 torch，走 --no-ai 路径）
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy==1.23.5 opencv-python-headless==4.6.0.66 Pillow==9.3.0 scenedetect==0.7.2
+        shell: pwsh
+
+      - name: 生成合成测试素材
+        run: python tools/make_fixtures.py --out tests/fixtures/synthetic
+        shell: pwsh
+
+      - name: 冒烟检测（硬切素材，期望 2 个切点）
+        run: |
+          python run.py tests/fixtures/synthetic/hardcuts.mp4 -o out/ci --no-ai --json | Tee-Object -FilePath out/ci.log
+          $log = Get-Content out/ci.log -Raw
+          if ($log -notmatch '"cuts"') { throw "没有输出切点" }
+          Write-Host "冒烟检测完成"
+        shell: pwsh
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-log
+          path: |
+            out/ci.log
+            out/ci/*.json
