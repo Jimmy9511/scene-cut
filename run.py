@@ -9,7 +9,17 @@ import sys
 from app.detect.pipeline import PRESETS, analyze
 
 
+def _force_utf8_stdio() -> None:
+    """把 stdout/stderr 切到 UTF-8：Windows CI/老终端默认 cp1252/cp936，打印中文会崩。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_stdio()
     ap = argparse.ArgumentParser(prog="run.py", description="scene-cut M0 检测")
     ap.add_argument("video", help="输入视频路径")
     ap.add_argument("-o", "--out", default="out", help="analysis 输出目录")
