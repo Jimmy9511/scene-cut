@@ -1,0 +1,16 @@
+# 运行时依赖（Python 3.10，Windows）
+# 离线安装：python tools/fetch_wheels.py <包名...> 然后
+#   pip install --no-index --find-links vendor/wheels -r requirements.txt
+
+numpy==1.23.5
+opencv-python==4.6.0.66
+Pillow==9.3.0
+scenedetect==0.7.2
+torch==2.0.1
+torchvision==0.15.2
+transnetv2-pytorch==1.0.5
+requests==2.28.1
+tqdm==4.66.1
+
+# 打包
+pyinstaller==6.9.0

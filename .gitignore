@@ -1,0 +1,42 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# ---- 构建产物 ----
+build/
+dist/
+dist-desktop/
+vendor/
+
+# ---- 运行时数据（绝不入库）----
+appdata/
+workspace/
+workspace-test/
+out/
+*.log
+
+# ---- 素材与模型 ----
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.flv
+*.ts
+*.m4v
+*.wav
+*.mp3
+*.pth
+*.onnx
+*.safetensors
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

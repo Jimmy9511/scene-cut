@@ -1,0 +1,33 @@
+"""一键构建：Python 后端（PyInstaller）+ WebView2 原生窗口宿主（csc）。
+
+用法：python tools/build_all.py
+产物：dist/scene-cut/{scene-cut.exe, scene-cut-window.exe, WebView2*.dll, _internal/}
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PY = ROOT / ".venv" / "Scripts" / "python.exe"
+
+
+def run(cmd: list[str]) -> None:
+    print("+", " ".join(cmd))
+    proc = subprocess.run(cmd, cwd=ROOT, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise SystemExit(proc.returncode)
+
+
+def main() -> int:
+    run([str(PY), "-m", "PyInstaller", "--clean", "--noconfirm",
+         "--distpath", "dist", "--workpath", "build", "scene-cut.spec"])
+    run([str(PY), str(ROOT / "tools" / "build_window.py")])
+    print("完成：dist/scene-cut")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

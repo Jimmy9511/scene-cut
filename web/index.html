@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>scene-cut · M0 预览</title>
+<link rel="stylesheet" href="/static/styles.css" />
+<link rel="stylesheet" href="/static/sidebar.css" />
+<link rel="stylesheet" href="/static/export.css" />
+</head>
+<body>
+<button id="sideRestore" class="sideRestore" title="展开侧栏">›</button>
+
+<div id="layout">
+  <aside id="sidebar">
+    <div class="sideHead">
+      <span class="wsName">scene-cut</span>
+      <button id="sideToggle" title="收起侧栏">‹</button>
+    </div>
+
+    <section class="pane poolPane">
+      <div class="paneHead">
+        <span>素材池</span>
+        <span id="poolInfo" class="dim"></span>
+        <button id="btnBatchAnalyze" title="检测所有勾选的文件">批量检测</button>
+        <button id="btnAnalyze" class="primary" title="对选中的素材检测并建项目">检测</button>
+      </div>
+      <div id="poolTree" class="tree drop"></div>
+      <div class="importBox">
+        <input id="importPath" placeholder="粘贴路径，或把文件/目录拖进来" />
+        <div class="btnRow">
+          <button id="btnImport">导入路径</button>
+          <button id="btnPickDir" title="系统目录选择框">选目录</button>
+          <button id="btnPickFile" title="系统文件选择框">选文件</button>
+        </div>
+        <div id="msg" class="msg"></div>
+      </div>
+    </section>
+
+    <section class="pane projPane">
+      <div class="paneHead">
+        <span>项目</span>
+        <span id="projInfo" class="dim"></span>
+        <button id="btnBatchExport" title="导出勾选项目的全部片段">批量导出</button>
+      </div>
+      <div id="projList" class="tree"></div>
+    </section>
+  </aside>
+
+  <main>
+    <section class="player">
+      <div class="stage">
+        <video id="video" muted playsinline preload="auto"></video>
+        <canvas id="frameCanvas"></canvas>
+        <div id="playOverlay" class="overlay">▶ 空格播放</div>
+      </div>
+      <div class="ab">
+        <div class="abCell empty"><img id="abA" alt="" /><span class="abLabel">A · 上一镜末帧</span></div>
+        <div class="abCell empty"><img id="abB" alt="" /><span class="abLabel">B · 下一镜首帧</span></div>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <div class="panelHead">
+        <span>镜头</span>
+        <div class="tools">
+          <button id="btnExport" class="primary" title="导出片段">导出</button>
+          <button id="btnSplit" title="在播放头处拆分 (B)">拆分</button>
+          <button id="btnMerge" title="合并选中镜头 (M)">合并</button>
+          <button id="btnUndo" title="撤销 (Ctrl+Z)">撤销</button>
+          <button id="btnRedo" title="重做 (Ctrl+Shift+Z)">重做</button>
+        </div>
+      </div>
+      <div class="listHead">
+        <span class="ck" title="勾选多个镜头可合并"></span>
+        <span title="镜头序号">#</span>
+        <span title="起始切点时间码">切点</span>
+        <span title="本镜头时长">时长</span>
+        <span title="进入本镜头的转场类型">转场类型</span>
+        <span title="检测置信度（绿≥.75 黄≥.45 灰更小）">置信度</span>
+      </div>
+      <div id="shotList" class="shotList"></div>
+      <div class="listFoot">
+        <span id="shotCount">0 镜头</span>
+        <span id="selCount" class="dim"></span>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<div id="exportModal" class="modal hidden">
+  <div class="modalBox">
+    <div class="modalHead">
+      <span>导出片段</span>
+      <button id="expClose" title="关闭">✕</button>
+    </div>
+    <div class="modalBody">
+      <div class="field"><label>范围</label>
+        <select id="expRange">
+          <option value="all">全部镜头</option>
+          <option value="checked">已勾选的镜头</option>
+        </select>
+        <span id="expCount" class="dim"></span>
+      </div>
+      <div class="field"><label>模式</label>
+        <select id="expMode">
+          <option value="smart">smart · 智能混合（段首重编码 + 尾部无损，帧数可能 ±几帧）</option>
+          <option value="copy">copy · 无损流拷贝（吸附关键帧，尾部会多几帧）</option>
+          <option value="exact">exact · 帧级精确重编码（帧数严格一致）</option>
+        </select>
+      </div>
+      <div class="field"><label>输出</label>
+        <select id="expOut">
+          <option value="clips">clips/ · 交付片段</option>
+          <option value="shots">shots/ · 原始镜头</option>
+        </select>
+      </div>
+      <div class="field"><label>命名</label>
+        <input id="expNaming" value="{kind}{index:04d}_{source}_{start_tc}" />
+      </div>
+      <div class="field"><label>预览</label><div id="expPreview" class="expPreview">—</div></div>
+      <div class="expBarWrap"><div id="expBar" class="expBar"></div></div>
+      <div id="expMsg" class="msg"></div>
+      <div id="expResults" class="expResults"></div>
+    </div>
+    <div class="modalFoot">
+      <button id="expLast" title="查看本项目上次导出的清单">上次结果</button>
+      <button id="expCancel">关闭</button>
+      <button id="expStart" class="primary">开始导出</button>
+    </div>
+  </div>
+</div>
+
+<div id="clipPreview" class="modal hidden">
+  <div class="previewBox">
+    <div class="modalHead">
+      <span id="clipTitle">片段预览</span>
+      <button id="clipClose" title="关闭">✕</button>
+    </div>
+    <video id="clipVideo" controls playsinline></video>
+    <div class="previewFoot"><span id="clipMeta" class="dim"></span></div>
+  </div>
+</div>
+
+<footer>
+  <div class="tlBar">
+    <button id="zoomOut" title="缩小">−</button>
+    <button id="zoomIn" title="放大">+</button>
+    <button id="zoomFit" title="全片">全片</button>
+    <span id="viewInfo" class="dim"></span>
+  </div>
+  <canvas id="timeline"></canvas>
+  <div class="status">
+    <span id="frameInfo">frame -</span>
+    <span id="timeInfo">00:00:00.000</span>
+    <span id="cutInfo" class="dim">—</span>
+    <span class="spacer"></span>
+    <span class="keys">Space 播放 · ←/→ ±1帧 · Shift ±10帧 · B 拆分 · M 合并 · Ctrl+Z 撤销 · Ctrl+滚轮 缩放</span>
+  </div>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

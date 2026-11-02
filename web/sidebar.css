@@ -1,0 +1,40 @@
+/* 追加：素材池 / 项目管理 双区侧栏 */
+.pane { display: flex; flex-direction: column; min-height: 0; }
+.poolPane { flex: 1.35 1 0; border-bottom: 1px solid var(--line); }
+.projPane { flex: 1 1 0; }
+.paneHead {
+  display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+  color: var(--dim); font-size: 11px; border-bottom: 1px solid var(--line); background: #131820;
+}
+.paneHead .dim { flex: 1; }
+.paneHead button { padding: 1px 7px; font-size: 11px; }
+
+.tree.drop.dragover { outline: 2px dashed var(--accent); outline-offset: -4px; background: #12202f; }
+.node {
+  display: flex; align-items: center; gap: 5px; padding: 3px 8px 3px 12px;
+  cursor: pointer; border-left: 2px solid transparent; font-size: 12px; user-select: none;
+}
+.node:hover { background: #1c232c; }
+.node.active { background: #1f2a36; border-left-color: var(--accent); }
+.node .tw { width: 12px; color: var(--dim); flex: 0 0 auto; text-align: center; }
+.node .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node.dir .nm { color: #cbd5e1; }
+.node .acts { display: none; gap: 2px; }
+.node:hover .acts { display: flex; }
+.node .acts button { padding: 0 4px; font-size: 10px; line-height: 15px; border-radius: 3px; }
+.badge { font-size: 10px; padding: 0 5px; border-radius: 8px; border: 1px solid var(--line); color: var(--dim); }
+.badge.ok { color: var(--green); border-color: #14532d; }
+.badge.fail { color: var(--red); border-color: #7f1d1d; }
+.badge.run { color: var(--yellow); border-color: #78350f; }
+.badge.raw { color: #94a3b8; }
+
+.projRow {
+  display: flex; align-items: center; gap: 6px; padding: 5px 10px;
+  cursor: pointer; border-left: 2px solid transparent;
+}
+.projRow:hover { background: #1c232c; }
+.projRow.active { background: #1f2a36; border-left-color: var(--accent); }
+.projRow .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.projRow .acts { display: none; gap: 2px; }
+.projRow:hover .acts { display: flex; }
+.projRow .acts button { padding: 0 4px; font-size: 10px; line-height: 15px; }
