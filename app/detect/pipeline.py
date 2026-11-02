@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -86,7 +87,13 @@ def analyze(
     t2_ms = 0
     if use_ai:
         t0 = time.perf_counter()
-        probs = t2_transnet.predict_probs(rgb, device="auto")
+        try:
+            probs = t2_transnet.predict_probs(rgb, device="auto")
+        except ImportError:
+            # 没装 torch 时优雅降级为纯 T1 统计检测，而不是整条流水线失败
+            print("提示：未安装 torch，跳过 TransNetV2 渐变检测（本次仅 T1 统计检测）",
+                  file=sys.stderr, flush=True)
+            probs = None
         t2_ms = int((time.perf_counter() - t0) * 1000)
 
     t0 = time.perf_counter()

@@ -57,7 +57,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
-          python run.py tests/fixtures/synthetic/hardcuts.mp4 -o out/ci 2>&1 | Tee-Object -FilePath out/ci.log
+          python run.py tests/fixtures/synthetic/hardcuts.mp4 -o out/ci --no-ai 2>&1 | Tee-Object -FilePath out/ci.log
           $code = $LASTEXITCODE
           Write-Host "---- 输出 ----"
           Get-Content out/ci.log
