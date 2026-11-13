@@ -16,10 +16,12 @@ jobs:
           python-version: "3.10"
       - name: 语法检查
         run: python -m compileall -q app tools launcher.py run.py
+      - name: 单元测试（日志/设置）
+        run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: 静态检查（未定义名 / 语法级错误）
         run: |
           python -m pip install --quiet ruff
-          ruff check --select F821,F822,F823,F63,F7,E9 app tools launcher.py run.py
+          ruff check --select F821,F822,F823,F63,F7,E9,E402 app tools launcher.py run.py tests
 
   smoke:
     runs-on: windows-latest
@@ -68,6 +70,30 @@ jobs:
           $log = Get-Content out/ci.log -Raw
           if ($log -notmatch "镜头数") { throw "没有输出镜头统计" }
           Write-Host "冒烟检测通过"
+
+      - name: 冒烟：日志与接口（--log-level debug）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $env:SCENECUT_DATA = Join-Path $PWD "out\ci-data"
+          $proc = Start-Process -FilePath "python" -ArgumentList @(
+            "-m","app.api.server","--port","8877","--log-level","debug",
+            "--workspace", (Join-Path $env:SCENECUT_DATA "workspace"),
+            "--pool", (Join-Path $env:SCENECUT_DATA "appdata\pool.json")
+          ) -PassThru -RedirectStandardOutput (Join-Path $PWD "out\server.log") -RedirectStandardError (Join-Path $PWD "out\server.err")
+          try {
+            Start-Sleep -Seconds 6
+            $level = (Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8877/api/log/level").Content
+            Write-Host "log level:", $level
+            if ($level -notmatch '"level"') { throw "日志级别接口异常" }
+            $jobs = (Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8877/api/jobs").Content
+            Write-Host "jobs:", $jobs
+            if ($jobs -notmatch '"jobs"') { throw "/api/jobs 接口异常" }
+            Get-Content out\server.log | Select-Object -Last 12
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+          if ((Get-Content out\server.log -Raw) -notmatch "\[app\]") { throw "控制台日志没有输出" }
 
       - name: 上传日志
         if: always()

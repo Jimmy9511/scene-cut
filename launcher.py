@@ -356,10 +356,20 @@ def _relaunch_unelevated() -> bool:
     return True
 
 
+def _arg_value(args: list[str], name: str) -> str | None:
+    for i, a in enumerate(args):
+        if a == name and i + 1 < len(args):
+            return args[i + 1]
+        if a.startswith(name + "="):
+            return a.split("=", 1)[1]
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     use_browser = "--browser" in args
     no_open = "--no-open" in args
+    log_level = _arg_value(args, "--log-level")
 
     if _relaunch_unelevated():
         return 0
@@ -377,7 +387,10 @@ def main(argv: list[str] | None = None) -> int:
     import app.api.server as server
 
     def serve() -> None:
-        server.main(["--port", str(port)])
+        argv = ["--port", str(port)]
+        if log_level:
+            argv += ["--log-level", log_level]
+        server.main(argv)
 
     threading.Thread(target=serve, daemon=True).start()
     ready = _wait_ready(port)

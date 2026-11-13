@@ -14,7 +14,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PY = Path(sys.executable)
+# 本地有 .venv 就用它（里面装了 PyInstaller）；CI 上没有 .venv，用当前解释器
+_VENV_PY = ROOT / ".venv" / "Scripts" / "python.exe"
+PY = _VENV_PY if _VENV_PY.exists() else Path(sys.executable)
 
 
 def run(cmd: list[str]) -> None:
@@ -29,7 +31,14 @@ def main() -> int:
     run([str(PY), "-m", "PyInstaller", "--clean", "--noconfirm",
          "--distpath", "dist", "--workpath", "build", "scene-cut.spec"])
     run([str(PY), str(ROOT / "tools" / "build_window.py")])
-    print("完成：dist/scene-cut")
+
+    out = ROOT / "dist" / "scene-cut"
+    required = ("scene-cut.exe", "scene-cut-window.exe", "WebView2Loader.dll",
+                "Microsoft.Web.WebView2.Core.dll")
+    missing = [name for name in required if not (out / name).exists()]
+    if missing:
+        raise SystemExit(f"构建不完整，缺少：{missing}（窗口宿主没编译成功？）")
+    print("完成：dist/scene-cut（含窗口宿主与 WebView2 依赖）")
     return 0
 
 

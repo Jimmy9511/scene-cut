@@ -118,8 +118,30 @@ main { flex: 1; display: flex; min-width: 0; }
 footer { border-top: 1px solid var(--line); background: var(--panel); }
 .tlBar { display: flex; align-items: center; gap: 8px; padding: 5px 10px 0; font-size: 12px; }
 #timeline { display: block; width: 100%; height: 92px; cursor: pointer; }
-.status { display: flex; gap: 16px; padding: 6px 12px; color: var(--dim); border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.status { display: flex; gap: 16px; padding: 6px 12px; color: var(--dim); border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; align-items: center; }
 .status #frameInfo { color: var(--text); }
 .keys { font-size: 11px; }
 .dim { color: var(--dim); }
 .spacer { flex: 1; }
+
+/* ---------- 作业进度 / 日志级别 ---------- */
+.jobbar { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 12px; }
+.jobbar.hidden { display: none; }
+.jobbar .jbspin {
+  width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
+  border: 2px solid var(--accent); border-right-color: transparent;
+  animation: jbspin .8s linear infinite;
+}
+@keyframes jbspin { to { transform: rotate(360deg); } }
+.jobbar button.ghost {
+  background: transparent; color: var(--dim); border: 1px solid var(--line);
+  border-radius: 4px; padding: 1px 8px; cursor: pointer; font-size: 11px;
+}
+.jobbar button.ghost:hover { color: var(--red); border-color: var(--red); }
+.loglevel { font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
+.loglevel select {
+  background: #0b0f14; color: var(--dim); border: 1px solid var(--line);
+  border-radius: 4px; padding: 1px 4px; font-size: 11px;
+}
+.loglevel select:focus { outline: none; border-color: var(--accent); color: var(--text); }
+#btnAnalyze[disabled] { opacity: .55; cursor: not-allowed; }

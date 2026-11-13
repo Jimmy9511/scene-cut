@@ -13,12 +13,14 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 import uuid
 from pathlib import Path
 
 PROJECT_SCHEMA = "scene-cut/project/1"
 _BAD = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WRITE_LOCK = threading.Lock()
 
 
 def _safe_name(name: str, fallback: str = "project") -> str:
@@ -134,9 +136,10 @@ class Workspace:
         if not project:
             return None
         directory = Path(project["dir"])
-        data = json.loads((directory / "project.json").read_text(encoding="utf-8"))
-        data.update(fields)
-        self._write(directory, data)
+        with _WRITE_LOCK:                    # 并发检测时避免丢字段（读-改-写）
+            data = json.loads((directory / "project.json").read_text(encoding="utf-8"))
+            data.update(fields)
+            self._write(directory, data)
         return {**data, "dir": str(directory)}
 
     # ---------- 解释文件 ----------

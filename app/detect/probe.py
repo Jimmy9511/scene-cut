@@ -13,8 +13,12 @@ from fractions import Fraction
 from pathlib import Path
 
 
-def _run(args: list[str]) -> str:
-    proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+def _run(args: list[str], timeout: float = 60.0) -> str:
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffprobe 超时（>{timeout:.0f}s）: {Path(args[-1]).name}") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"ffprobe 失败 ({proc.returncode}): {proc.stderr[-400:]}")
     return proc.stdout
@@ -29,13 +33,13 @@ def _rate(value: str | None) -> float:
         return 0.0
 
 
-def probe(path: str | Path) -> dict:
+def probe(path: str | Path, timeout: float = 60.0) -> dict:
     """返回统一结构的探测信息。"""
     raw = json.loads(
         _run([
             "ffprobe", "-v", "error", "-print_format", "json",
             "-show_streams", "-show_format", str(path),
-        ])
+        ], timeout=timeout)
     )
     vstream = next((s for s in raw.get("streams", []) if s.get("codec_type") == "video"), None)
     if vstream is None:
@@ -71,13 +75,13 @@ def probe(path: str | Path) -> dict:
     }
 
 
-def keyframes(path: str | Path) -> list[float]:
+def keyframes(path: str | Path, timeout: float = 300.0) -> list[float]:
     """关键帧 pts 列表（秒）。"""
     out = _run([
         "ffprobe", "-v", "error", "-select_streams", "v:0",
         "-skip_frame", "nokey", "-show_entries", "frame=pts_time",
         "-print_format", "json", str(path),
-    ])
+    ], timeout=timeout)
     pts = []
     for frame in json.loads(out).get("frames", []):
         try:
@@ -87,13 +91,14 @@ def keyframes(path: str | Path) -> list[float]:
     return pts
 
 
-def frame_pts_window(path: str | Path, start: float, end: float) -> list[float]:
+def frame_pts_window(path: str | Path, start: float, end: float,
+                     timeout: float = 120.0) -> list[float]:
     """候选窗内的精确帧时间戳（只在窗口内调用，避免长片全局解析）。"""
     out = _run([
         "ffprobe", "-v", "error", "-select_streams", "v:0",
         "-read_intervals", f"{max(start, 0):.3f}%{(end + 0.2):.3f}",
         "-show_entries", "frame=pts_time", "-print_format", "json", str(path),
-    ])
+    ], timeout=timeout)
     pts = []
     for frame in json.loads(out).get("frames", []):
         try:

@@ -10,16 +10,21 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import re
 import subprocess
 import threading
 import time
+import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from app import __version__
+from app import log as logmod
 from app.detect.probe import probe as probe_media
+from app.errors import Cancelled
 from app.media.frameservice import get_service
 from app.paths import DATA_ROOT, WEB_DIR
 from app.store.pool import MEDIA_EXT, Pool
@@ -34,6 +39,12 @@ PROBES: dict[str, dict] = {}
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
 PICK_LOCK = threading.Lock()
+# 素材路径 → 正在跑的 job id（去重：同一条素材同时只允许一个检测）
+ACTIVE_SOURCES: dict[str, str] = {}
+# job id → 取消标志（用户点“取消”时置位）
+CANCELS: dict[str, threading.Event] = {}
+# 单素材检测的并发闸门：默认 1 路，避免多条素材同时解码把 CPU 打满
+ANALYZE_SLOTS = threading.Semaphore(int(os.getenv("SCENECUT_ANALYZE_SLOTS", "1")))
 
 
 def _probe(path: str) -> dict:
@@ -79,13 +90,52 @@ def _resolve(qs: dict) -> tuple[dict | None, str | None]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "scene-cut/0.9"
+    server_version = f"scene-cut/{__version__}"
 
     def log_message(self, fmt, *args):
         return
 
+    def handle_one_request(self) -> None:
+        """统一收口：请求计时（debug）+ 客户端断开静默 + 未预期异常记日志。"""
+        started = time.perf_counter()
+        self._status_code = 0
+        try:
+            super().handle_one_request()
+        except ConnectionError:
+            logmod.debug("http", f"连接中断 {self.command or '?'} {self.path or ''}", throttle=0.5)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) in (10053, 10054, 10058, 10060):
+                logmod.debug("http", f"连接中断（{exc.winerror}）{self.path or ''}", throttle=0.5)
+            else:
+                logmod.error("http", f"{self.command} {self.path} 出错：{exc}")
+                logmod.debug("http", traceback.format_exc())
+                self._safe_500()
+        except Exception as exc:  # noqa: BLE001
+            logmod.error("http", f"{self.command or '?'} {self.path or ''} 处理失败：{exc}")
+            logmod.debug("http", traceback.format_exc())
+            self._safe_500()
+        finally:
+            if getattr(self, "command", None):
+                cost = (time.perf_counter() - started) * 1000
+                logmod.debug(
+                    "http",
+                    f"{self.command} {unquote(self.path or '')} -> {self._status_code or '-'} {cost:.0f}ms",
+                    throttle=0.05,
+                )
+
+    def _safe_500(self) -> None:
+        if self._status_code:
+            return
+        try:
+            if not self.wfile.closed:
+                self.send_error(500)
+                self._status_code = 500
+        except Exception:  # noqa: BLE001
+            pass
+
     # ---------- 基础 ----------
     def _send(self, code, body: bytes, ctype: str, extra: dict | None = None):
+        self._status_code = code
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -134,6 +184,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/job":
             job = JOBS.get((qs.get("id") or [""])[0])
             return self._json(job) if job else self._json({"error": "no job"}, 404)
+        if path == "/api/jobs":
+            with JOBS_LOCK:
+                running = [dict(j) for j in JOBS.values() if j.get("status") == "running"]
+            return self._json({"jobs": running})
+        if path == "/api/log/level":
+            return self._json({"level": logmod.get_level(), "levels": list(logmod.LEVELS)})
         if path == "/api/analysis":
             return self._analysis(qs)
         if path == "/api/frame":
@@ -170,11 +226,43 @@ class Handler(BaseHTTPRequestHandler):
             "/api/projects/create": self._project_create,
             "/api/edit": self._edit,
             "/api/export": self._export,
+            "/api/job/cancel": self._job_cancel,
+            "/api/log/level": self._log_level,
         }
         h = handlers.get(path)
         if not h:
             return self._send(404, b"not found", "text/plain")
         return h()
+
+    def _log_level(self):
+        body = self._body()
+        wanted = str(body.get("level") or "").strip()
+        if not wanted:
+            return self._json({"level": logmod.get_level(), "levels": list(logmod.LEVELS)})
+        try:
+            level = logmod.set_level(wanted)
+        except ValueError as exc:
+            return self._json({"error": str(exc), "levels": list(logmod.LEVELS)}, 400)
+        logmod.info("log", f"日志级别切换为 {level}")
+        return self._json({"level": level, "levels": list(logmod.LEVELS)})
+
+    def _job_cancel(self):
+        body = self._body()
+        jid = str(body.get("id") or "")
+        with JOBS_LOCK:
+            job = JOBS.get(jid)
+            if not job:
+                return self._json({"error": "没有这个作业"}, 404)
+            if job.get("status") != "running":
+                return self._json({"ok": False, "error": "作业已结束", "job": job}, 409)
+            event = CANCELS.get(jid)
+            if event is None:
+                event = threading.Event()
+                CANCELS[jid] = event
+            event.set()
+            job["cancelled"] = True
+        logmod.warn("job", f"请求取消作业 {jid}（{job.get('kind') or 'analyze'}）")
+        return self._json({"ok": True, "job": job})
 
     # ---------- 素材池 ----------
     def _pool_import(self):
@@ -185,17 +273,21 @@ class Handler(BaseHTTPRequestHandler):
         try:
             root = POOL.add(raw)
         except (FileNotFoundError, ValueError, OSError) as exc:
+            logmod.warn("pool", f"导入失败 {raw}: {exc}")
             return self._json({"error": str(exc)}, 400)
+        logmod.info("pool", f"导入素材 {root['path']}（{root['kind']}）")
         return self._json({"root": root, "roots": POOL.roots})
 
     def _pool_remove(self):
         body = self._body()
         ok = POOL.remove(str(body.get("root") or ""))
+        logmod.info("pool", f"移除素材根 {body.get('root')} -> {ok}")
         return self._json({"ok": ok})
 
     def _pool_rename(self):
         body = self._body()
         root = POOL.rename(str(body.get("root") or ""), str(body.get("alias") or ""))
+        logmod.info("pool", f"重命名素材根 {body.get('root')} -> {root['alias'] if root else None}")
         return self._json({"ok": root is not None, "root": root})
 
     def _pick(self):
@@ -242,6 +334,7 @@ class Handler(BaseHTTPRequestHandler):
             project = WS.create(src, name=body.get("name") or None)
         except (FileNotFoundError, OSError) as exc:
             return self._json({"error": str(exc)}, 400)
+        logmod.info("project", f"新建项目 {project['name']} ({project['id']})")
         return self._json({"project": project, "created": True})
 
     def _analyze(self):
@@ -249,16 +342,37 @@ class Handler(BaseHTTPRequestHandler):
         src = str(body.get("source") or "")
         if not POOL.contains(src):
             return self._json({"error": "素材不在素材池内"}, 400)
+        if not src or not Path(src).is_file():
+            logmod.warn("detect", f"素材不存在，无法检测：{src}")
+            return self._json({"error": f"素材不存在：{src}"}, 400)
+
+        # 去重：同一条素材已在检测时直接复用现有作业，避免重复占用 CPU
+        if not os.environ.get("SCENECUT_NO_DEDUPE"):
+            with JOBS_LOCK:
+                running_id = ACTIVE_SOURCES.get(src)
+                running = JOBS.get(running_id) if running_id else None
+                if running and running.get("status") == "running":
+                    logmod.info("detect", f"复用进行中的检测 {running['id']}（{Path(src).name}）")
+                    return self._json({"job": running, "reused": True,
+                                       "project": WS.find_by_source(src)})
+
         project = WS.find_by_source(src) or WS.create(src, name=body.get("name") or None)
         pid = project["id"]
         jid = uuid.uuid4().hex[:12]
+        preset = str(body.get("preset") or "实拍短片")
+        use_ai = bool(body.get("ai", True))
+        job = {"id": jid, "kind": "analyze", "project": pid, "source": src,
+               "status": "running", "phase": "queued", "progress": 0.0,
+               "message": "排队中", "started": time.time(), "elapsed_ms": 0}
         with JOBS_LOCK:
-            JOBS[jid] = {"id": jid, "project": pid, "status": "running",
-                         "started": time.time(), "elapsed_ms": 0}
+            JOBS[jid] = job
+            ACTIVE_SOURCES[src] = jid
+            CANCELS[jid] = threading.Event()
+        logmod.info("detect", f"开始检测 {Path(src).name} -> 项目 {project['name']} "
+                              f"preset={preset} ai={'on' if use_ai else 'off'} job={jid}")
         threading.Thread(target=_run_analysis, daemon=True,
-                         args=(jid, pid, src, str(body.get("preset") or "实拍短片"),
-                               bool(body.get("ai", True)))).start()
-        return self._json({"job": JOBS[jid], "project": project})
+                         args=(jid, pid, src, preset, use_ai, False)).start()
+        return self._json({"job": job, "project": project, "reused": False})
 
     def _batch_analyze(self):
         body = self._body()
@@ -271,6 +385,8 @@ class Handler(BaseHTTPRequestHandler):
                "items": [{"source": s, "name": Path(s).name, "status": "pending"} for s in sources]}
         with JOBS_LOCK:
             JOBS[jid] = job
+            CANCELS[jid] = threading.Event()
+        logmod.info("batch", f"批量检测开始 {len(sources)} 条 job={jid}")
         threading.Thread(target=_run_batch_analyze, daemon=True,
                          args=(job, sources, str(body.get("preset") or "实拍短片"),
                                bool(body.get("ai", True)),
@@ -303,11 +419,15 @@ class Handler(BaseHTTPRequestHandler):
     def _project_rename(self):
         body = self._body()
         project = WS.rename(str(body.get("project") or ""), str(body.get("name") or ""))
+        if project:
+            logmod.info("project", f"重命名项目 -> {project['name']}")
         return self._json({"ok": project is not None, "project": project})
 
     def _project_remove(self):
         body = self._body()
-        return self._json({"ok": WS.remove(str(body.get("project") or ""))})
+        ok = WS.remove(str(body.get("project") or ""))
+        logmod.info("project", f"删除项目 {body.get('project')} -> {ok}")
+        return self._json({"ok": ok})
 
     # ---------- 预览 / 编辑 ----------
     def _analysis(self, qs):
@@ -362,28 +482,42 @@ class Handler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(file.name)[0] or "video/mp4"
         rng = self.headers.get("Range")
         if not rng:
-            return self._send(200, file.read_bytes(), ctype, {"Accept-Ranges": "bytes"})
-        m = re.match(r"bytes=(\d*)-(\d*)", rng)
-        if not m:
-            return self._send(416, b"bad range", "text/plain")
-        start = int(m.group(1) or 0)
-        end = min(int(m.group(2)) if m.group(2) else size - 1, size - 1)
+            # 没有 Range 时也要流式发送，绝不整文件读进内存（大文件会直接吃光 RAM）
+            start, end, code = 0, size - 1, 200
+        else:
+            m = re.match(r"bytes=(\d*)-(\d*)", rng)
+            if not m:
+                return self._send(416, b"bad range", "text/plain")
+            start = int(m.group(1) or 0)
+            end = min(int(m.group(2)) if m.group(2) else size - 1, size - 1)
+            code = 206
         length = max(0, end - start + 1)
-        self.send_response(206)
+        logmod.debug("video", f"流式发送 {file.name} {start}-{end}/{size} ({length} B)")
+
+        self._status_code = code
+        self.send_response(code)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        if code == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header("Content-Length", str(length))
         self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        with file.open("rb") as fh:
-            fh.seek(start)
-            remain = length
-            while remain > 0:
-                chunk = fh.read(min(1 << 20, remain))
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                remain -= len(chunk)
+        if length <= 0:
+            return
+        try:
+            with file.open("rb") as fh:
+                fh.seek(start)
+                remain = length
+                while remain > 0:
+                    chunk = fh.read(min(1 << 20, remain))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remain -= len(chunk)
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            # 播放器拖动/切走会主动断开连接，这是正常现象
+            logmod.debug("video", f"客户端中断 {file.name}（剩余 {remain} B）", throttle=0.5)
 
     def _strip(self, qs):
         project, media = _resolve(qs)
@@ -418,13 +552,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "项目未分析"}, 404)
         from app.store.edit import apply
 
+        op = str(body.get("op") or "")
         try:
-            result = apply(data, str(body.get("op") or ""), body)
+            result = apply(data, op, body)
         except ValueError as exc:
+            logmod.warn("edit", f"编辑被拒绝 op={op}: {exc}")
             return self._json({"error": str(exc)}, 400)
         except Exception as exc:  # noqa: BLE001
+            logmod.error("edit", f"编辑失败 op={op}: {exc}")
             return self._json({"error": str(exc)[:200]}, 500)
         WS.save_analysis(pid, data)
+        extra = ""
+        for key in ("frame", "ids", "id", "pos"):
+            if key in body:
+                extra += f" {key}={body[key]}"
+        logmod.info("edit", f"{op}{extra} -> 历史 {result.get('edit_pos')}/{result.get('edit_len')}")
         return self._json(result)
 
     # ---------- 导出产物回看 ----------
@@ -560,12 +702,14 @@ class Handler(BaseHTTPRequestHandler):
         WS.update(pid, export={"mode": mode, "out": out_kind, "naming": naming})
 
         jid = uuid.uuid4().hex[:12]
-        job = {"id": jid, "project": pid, "status": "running", "started": time.time(),
-               "elapsed_ms": 0, "total": len(segments), "done": 0, "current": "",
-               "results": []}
+        job = {"id": jid, "kind": "export", "project": pid, "status": "running",
+               "started": time.time(), "elapsed_ms": 0, "total": len(segments),
+               "done": 0, "current": "", "results": []}
         with JOBS_LOCK:
             JOBS[jid] = job
         out_dir = Path(project["dir"]) / out_kind
+        logmod.info("export", f"开始导出 {project['name']} {len(segments)} 段 "
+                              f"mode={mode} out={out_kind} job={jid}")
         threading.Thread(target=run_export, daemon=True,
                          args=(job, project, data, segments, mode, out_dir,
                                str(body.get("encoder") or "nvenc"),
@@ -575,14 +719,16 @@ class Handler(BaseHTTPRequestHandler):
                            "dir": str(out_dir)})
 
 
-def _analyze_sync(pid: str, source: str, preset: str, use_ai: bool) -> dict:
+def _analyze_sync(pid: str, source: str, preset: str, use_ai: bool,
+                  progress=None, should_cancel=None) -> dict:
     from app.detect.pipeline import analyze
 
-    WS.update(pid, status="analyzing")
+    WS.update(pid, status="analyzing", error=None)
     WS.log(pid, f"start analyze source={source} preset={preset} ai={use_ai}")
     directory = WS.dir_of(pid)
     result = analyze(source, directory, asset_id="analysis",
-                     preset_name=preset, use_ai=use_ai)
+                     preset_name=preset, use_ai=use_ai,
+                     progress=progress, should_cancel=should_cancel)
     WS.update(pid, status="analyzed", analyzed_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
     WS.log(pid, f"done shots={result['shots']} cuts={len(result['cuts'])} "
                 f"elapsed={result['elapsed_ms']}ms")
@@ -590,17 +736,78 @@ def _analyze_sync(pid: str, source: str, preset: str, use_ai: bool) -> dict:
     return result
 
 
-def _run_analysis(jid: str, pid: str, source: str, preset: str, use_ai: bool) -> None:
+def _job_progress(job: dict, t0: float):
+    """构造进度回调：更新 job 字段，并按 10% 步进打 info 日志。"""
+    last_logged = {"pct": -10}
+
+    def progress(phase: str, fraction: float, note: str = "") -> None:
+        pct = int(max(0.0, min(1.0, fraction)) * 100)
+        with JOBS_LOCK:
+            job["phase"] = phase
+            job["progress"] = round(max(0.0, min(1.0, fraction)), 4)
+            job["message"] = note
+            job["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
+        if pct >= last_logged["pct"] + 10:
+            last_logged["pct"] = pct
+            logmod.info("detect", f"{phase} {pct}% {note}".rstrip())
+
+    return progress
+
+
+def _finish_job(jid: str, source: str, **fields) -> None:
+    with JOBS_LOCK:
+        job = JOBS.get(jid)
+        if job is not None:
+            job.update(fields)
+        if ACTIVE_SOURCES.get(source) == jid:
+            ACTIVE_SOURCES.pop(source, None)
+        CANCELS.pop(jid, None)
+
+
+def _run_analysis(jid: str, pid: str, source: str, preset: str, use_ai: bool,
+                  cancelled: bool = False) -> None:
     t0 = time.perf_counter()
+    event = CANCELS.get(jid) or threading.Event()
+
+    def should_cancel() -> bool:
+        return event.is_set()
+
+    # 排队等闸门；等待期间保持 queued 状态，取消可立即退出
+    acquired = False
     try:
-        result = _analyze_sync(pid, source, preset, use_ai)
-        JOBS[jid].update({"status": "done", "shots": result["shots"],
-                          "elapsed_ms": int((time.perf_counter() - t0) * 1000)})
+        while not ANALYZE_SLOTS.acquire(timeout=0.5):
+            if should_cancel():
+                raise Cancelled("用户取消")
+            with JOBS_LOCK:
+                job = JOBS.get(jid)
+                if job is not None:
+                    job["phase"] = "queued"
+                    job["message"] = "等待前面的检测结束"
+                    job["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
+        acquired = True
+        result = _analyze_sync(pid, source, preset, use_ai,
+                               progress=_job_progress(JOBS.get(jid, {}), t0),
+                               should_cancel=should_cancel)
+        _finish_job(jid, source, status="done", phase="done", progress=1.0,
+                    message="完成", shots=result["shots"],
+                    elapsed_ms=int((time.perf_counter() - t0) * 1000))
+        logmod.info("detect", f"检测完成 {Path(source).name} {result['shots']} 镜头 "
+                              f"{(time.perf_counter() - t0):.1f}s")
+    except Cancelled:
+        WS.update(pid, status="new", error=None)
+        WS.log(pid, "cancelled by user")
+        _finish_job(jid, source, status="cancelled", message="已取消",
+                    elapsed_ms=int((time.perf_counter() - t0) * 1000))
+        logmod.warn("detect", f"检测已取消 {Path(source).name}")
     except Exception as exc:  # noqa: BLE001
         WS.update(pid, status="failed", error=str(exc)[:300])
         WS.log(pid, f"failed: {exc}")
-        JOBS[jid].update({"status": "failed", "error": str(exc)[:300],
-                          "elapsed_ms": int((time.perf_counter() - t0) * 1000)})
+        _finish_job(jid, source, status="failed", error=str(exc)[:300],
+                    message="失败", elapsed_ms=int((time.perf_counter() - t0) * 1000))
+        logmod.error("detect", f"检测失败 {Path(source).name}: {exc}")
+    finally:
+        if acquired:
+            ANALYZE_SLOTS.release()
 
 
 def _run_batch_analyze(job: dict, sources: list[str], preset: str, use_ai: bool,
@@ -615,14 +822,18 @@ def _run_batch_analyze(job: dict, sources: list[str], preset: str, use_ai: bool,
     def work(index: int, src: str) -> None:
         item = job["items"][index]
         item["status"] = "running"
+        logmod.info("batch", f"[{index + 1}/{len(sources)}] 开始 {Path(src).name}")
         try:
             project = WS.find_by_source(src) or WS.create(src)
             item["project"] = project["id"]
             result = _analyze_sync(project["id"], src, preset, use_ai)
             item.update(status="done", shots=result["shots"],
                         elapsed_ms=result["elapsed_ms"])
+            logmod.info("batch", f"[{index + 1}/{len(sources)}] 完成 {Path(src).name} "
+                                 f"{result['shots']} 镜头")
         except Exception as exc:  # noqa: BLE001
             item.update(status="failed", error=str(exc)[:200])
+            logmod.error("batch", f"[{index + 1}/{len(sources)}] 失败 {Path(src).name}: {exc}")
         finally:
             with lock:
                 job["done"] = int(job.get("done", 0)) + 1
@@ -674,6 +885,45 @@ def _run_batch_export(job: dict, projects: list[dict], mode: str,
     job["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
 
 
+def _recover_stale_projects() -> None:
+    """启动时把"卡在 analyzing"的项目标为失败：进程被杀时状态会永久残留。"""
+    if WS is None:
+        return
+    with JOBS_LOCK:
+        active = set(ACTIVE_SOURCES.keys())
+    for project in WS.list_projects():
+        if project.get("status") != "analyzing":
+            continue
+        if project.get("source") in active:
+            continue
+        WS.update(project["id"], status="failed",
+                  error="上次检测未完成（程序被关闭或崩溃），请重新检测")
+        WS.log(project["id"], "recovered: stale analyzing -> failed")
+        logmod.warn("detect", f"上次检测未完成：{project.get('name')}（已标记失败，可重新检测）")
+
+
+def _self_check() -> None:
+    """后台自检：把影响检测的环境信息一次打出来，省得猜。"""
+    try:
+        proc = subprocess.run(["ffmpeg", "-version"], capture_output=True,
+                              text=True, timeout=15, encoding="utf-8", errors="replace")
+        first = (proc.stdout or "").splitlines()[0] if proc.stdout else ""
+        logmod.info("env", f"ffmpeg: {first[:100]}")
+    except Exception as exc:  # noqa: BLE001
+        logmod.error("env", f"ffmpeg 不可用：{exc}（检测/导出会失败，请安装或放进 _internal\\_bin）")
+    try:
+        import cv2
+        logmod.info("env", f"opencv {cv2.__version__}")
+    except Exception as exc:  # noqa: BLE001
+        logmod.error("env", f"opencv 不可用：{exc}")
+    try:
+        import torch
+        logmod.info("env", f"torch {torch.__version__} cuda={torch.cuda.is_available()} "
+                           f"threads={torch.get_num_threads()}")
+    except Exception as exc:  # noqa: BLE001
+        logmod.warn("env", f"torch 不可用（AI 渐变检测会降级为仅 T1）：{exc}")
+
+
 def main(argv: list[str] | None = None) -> int:
     global POOL, WS
     ap = argparse.ArgumentParser()
@@ -681,17 +931,28 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pool", default=str(DATA_ROOT / "appdata" / "pool.json"))
     ap.add_argument("--port", type=int, default=8768)
     ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--log-level", default=None,
+                    help="日志级别：debug/detail/info/warning/error（默认 info）")
     args = ap.parse_args(argv)
+
+    level = logmod.setup(args.log_level, log_dir=DATA_ROOT)
+    logmod.info("app", f"scene-cut {__version__} 启动（日志级别={level}，"
+                       f"数据目录={DATA_ROOT}）")
 
     POOL = Pool(Path(args.pool))
     WS = Workspace(Path(args.workspace))
+    _recover_stale_projects()
+
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    logmod.info("app", f"监听 http://{args.host}:{args.port}/  workspace={WS.root}  "
+                       f"素材根={len(POOL.roots)}  项目={len(WS.list_projects())}")
     print(f"scene-cut: http://{args.host}:{args.port}/  workspace={WS.root}  "
           f"pool_roots={len(POOL.roots)}  projects={len(WS.list_projects())}", flush=True)
+    threading.Thread(target=_self_check, daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        pass
+        logmod.info("app", "收到中断，退出")
     return 0
 
 

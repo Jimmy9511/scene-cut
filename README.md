@@ -57,6 +57,39 @@ python -m venv .venv
 
 需要 `ffmpeg` / `ffprobe`（PATH 中，或放到 `_internal\_bin\`）。
 
+## 日志与排障
+
+检测、导出、编辑等操作都会写进**启动器的控制台窗口**，同时落到 `<数据目录>\logs\app.log`（2 MB 轮转，保留 3 份）。
+
+级别（默认 `info`）：
+
+| 级别 | 数值 | 内容 |
+|---|---|---|
+| `debug` | 10 | HTTP 请求、帧/切片请求、连接断开 |
+| `detail` | 15 | 阶段细节：解码进度、候选数、每段导出耗时 |
+| `info` | 20 | 用户行为 + 任务进度（**默认**） |
+| `warning` | 30 | 可恢复异常：torch 缺失降级、作业取消 |
+| `error` | 40 | 失败：检测/导出异常、未捕获错误 |
+
+```
+14:03:22 INFO    [detect] 开始 素材=demo.mp4 帧=510 fps=30 1280x720 预设=实拍短片 ai=on
+14:03:24 INFO    [detect] t1 完成 1027ms 候选=1
+14:03:25 DETAIL  [detect] decode 41% (210/510)
+14:03:27 INFO    [detect] t2 开始 510 帧（预计 ≈6s，CPU 约 90 帧/秒）
+14:03:33 INFO    [detect] 完成 3 镜头 用时 10232ms
+```
+
+四个修改入口（任选）：
+
+```powershell
+scene-cut.exe --log-level detail                       # 命令行
+set SCENECUT_LOG_LEVEL=debug && scene-cut.exe          # 环境变量
+# <数据目录>\settings.json → {"log_level": "detail"}    # 配置文件
+# 界面底部状态栏「日志」下拉框                           # 运行时，立即生效
+```
+
+排障建议：**遇到检测卡住/很慢，先切到 `detail` 重跑一次**，控制台会显示当前阶段（`probe/t1/decode/t2/fuse`）、进度百分比与心跳，能直接看出卡在哪一步。
+
 ## 构建
 
 ```powershell

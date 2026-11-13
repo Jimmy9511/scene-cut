@@ -13,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 
+from app import log as logmod
 from app.export.cut import cut_copy, cut_exact, cut_smart, duration, frame_count
 
 
@@ -112,6 +113,7 @@ def run_export(job: dict, project: dict, analysis: dict, segments: list[dict],
     for seg in segments:
         target = out_dir / seg["name"]
         job["current"] = seg["name"]
+        job["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
         try:
             s = seg["start"] / fps
             e = seg["end"] / fps
@@ -136,14 +138,22 @@ def run_export(job: dict, project: dict, analysis: dict, segments: list[dict],
                 "offset_s": offset, "mode": info.get("mode", mode),
                 "size": target.stat().st_size if target.exists() else 0,
             })
+            logmod.detail("export", f" {seg['index']:03d} 完成 {seg['name']} "
+                                    f"{frames} 帧 期望 {expected}")
         except Exception as exc:  # noqa: BLE001
+            logmod.error("export", f" {seg['index']:03d} 失败 {seg['name']}: {exc}")
             job["results"].append({"index": seg["index"], "file": seg["name"],
                                    "status": "failed", "error": str(exc)[:200]})
         job["done"] += 1
+        if job["done"] % 10 == 0 or job["done"] == len(segments):
+            logmod.info("export", f"进度 {job['done']}/{len(segments)}")
 
     job["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
     job["status"] = "done"
     job["current"] = ""
+    ok = sum(1 for r in job["results"] if r.get("status") == "ok")
+    logmod.info("export", f"导出完成 {ok}/{len(segments)} 段 用时 {job['elapsed_ms']}ms "
+                          f"-> {out_dir}")
     _write_manifest(project, job, segments, mode, out_dir, fps, manifest_dir)
 
 

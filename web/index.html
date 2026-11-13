@@ -154,6 +154,21 @@
     <span id="timeInfo">00:00:00.000</span>
     <span id="cutInfo" class="dim">—</span>
     <span class="spacer"></span>
+    <span id="jobBar" class="jobbar hidden">
+      <span class="jbspin"></span>
+      <span id="jobText">…</span>
+      <button id="btnCancelJob" class="ghost" title="取消当前检测">取消</button>
+    </span>
+    <label class="loglevel" title="控制台日志级别（debug 最详细，用于排障）">
+      日志
+      <select id="logLevel">
+        <option value="debug">debug</option>
+        <option value="detail">detail</option>
+        <option value="info">info</option>
+        <option value="warning">warning</option>
+        <option value="error">error</option>
+      </select>
+    </label>
     <span class="keys">Space 播放 · ←/→ ±1帧 · Shift ±10帧 · B 拆分 · M 合并 · Ctrl+Z 撤销 · Ctrl+滚轮 缩放</span>
   </div>
 </footer>

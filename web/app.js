@@ -16,6 +16,7 @@ const S = {
   cache: new Map(), pending: new Set(),
   selPath: null, selName: '', collapsed: new Set(),
   poolChecked: new Set(), projChecked: new Set(),
+  jobId: null, runningJobSource: null,
 };
 
 const video = $('video');
@@ -183,7 +184,12 @@ function renderProjects() {
     const row = document.createElement('div');
     row.className = 'projRow' + (S.proj && S.proj.id === p.id ? ' active' : '');
     const statusCls = p.status === 'failed' ? 'fail' : p.has_analysis ? 'ok' : p.status === 'analyzing' ? 'run' : 'raw';
-    const statusText = p.has_analysis ? `${p.shots} 镜` : p.status === 'analyzing' ? '检测中' : p.status === 'failed' ? '失败' : '空';
+    let statusText;
+    if (p.has_analysis) statusText = `${p.shots} 镜`;
+    else if (p.status === 'analyzing') {
+      statusText = S.runningJobSource === p.source ? '检测中' : '上次未完成';
+    } else if (p.status === 'failed') statusText = '失败';
+    else statusText = '空';
     row.innerHTML =
       `<input type="checkbox" class="ck" ${S.projChecked.has(p.id) ? 'checked' : ''} />` +
       `<span class="nm" title="${p.dir}">${p.name}</span>` +
@@ -561,26 +567,109 @@ $('sideToggle').onclick = () => { document.body.classList.add('side-collapsed');
 $('sideRestore').onclick = () => { document.body.classList.remove('side-collapsed'); setTimeout(drawTimeline, 180); };
 
 // ---------------- 检测 ----------------
+const JOB_PHASE_LABEL = {
+  queued: '排队', probe: '读取信息', t1: '统计检测', decode: '解码',
+  t2: 'AI 检测', fuse: '融合边界', write: '写入结果', done: '完成',
+};
+
+function setJobBar(job) {
+  const bar = $('jobBar');
+  if (!bar) return;
+  if (!job || job.status !== 'running') {
+    bar.classList.add('hidden');
+    S.runningJobSource = null;
+    return;
+  }
+  bar.classList.remove('hidden');
+  S.runningJobSource = job.source || S.runningJobSource;
+  const pct = Math.round((job.progress || 0) * 100);
+  const phase = JOB_PHASE_LABEL[job.phase] || job.phase || '检测';
+  const note = job.message ? ` · ${job.message}` : '';
+  const secs = ((job.elapsed_ms || 0) / 1000).toFixed(1);
+  $('jobText').textContent = `${phase} ${pct}%${note} · ${secs}s`;
+}
+
+function setBusy(on) {
+  const btn = $('btnAnalyze');
+  if (btn) btn.disabled = !!on;
+}
+
+async function cancelCurrentJob() {
+  if (!S.jobId) return;
+  try {
+    await post('/api/job/cancel', { id: S.jobId });
+    setMsg('已请求取消，等待当前阶段结束…');
+  } catch (e) { setMsg(`取消失败：${e.message}`); }
+}
+$('btnCancelJob').onclick = cancelCurrentJob;
+
+async function trackJob(jobId, path) {
+  S.jobId = jobId;
+  setBusy(true);
+  try {
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 500));
+      const st = await api(`/api/job?id=${jobId}`);
+      setJobBar(st);
+      if (st.status === 'running') continue;
+      if (st.status === 'failed') setMsg(`检测失败：${st.error || '未知错误'}`);
+      else if (st.status === 'cancelled') setMsg('检测已取消');
+      else setMsg(`完成：${st.shots} 镜头，${((st.elapsed_ms || 0) / 1000).toFixed(1)}s`);
+      return st;
+    }
+  } finally {
+    S.jobId = null;
+    setBusy(false);
+    setJobBar(null);
+  }
+}
+
 async function analyzeSource(path) {
   if (!path) { setMsg('先在素材池里选中一个文件'); return; }
+  if (S.jobId) { setMsg('已有检测在进行中，先取消或等它结束'); return; }
   setMsg('检测中…（首次会建项目文件夹）');
   try {
     const res = await post('/api/projects/analyze', { source: path, ai: true });
-    const job = res.job;
-    for (;;) {
-      await new Promise((r) => setTimeout(r, 800));
-      const st = await api(`/api/job?id=${job.id}`);
-      if (st.status === 'running') continue;
-      if (st.status === 'failed') { setMsg(`检测失败：${st.error}`); break; }
-      setMsg(`完成：${st.shots} 镜头，${(st.elapsed_ms / 1000).toFixed(1)}s`);
-      break;
-    }
+    if (res.reused) setMsg('这条素材已在检测中，接上现有进度…');
+    await trackJob(res.job.id, path);
     await loadProjects();
     const proj = S.projects.find((p) => p.source.toLowerCase() === path.toLowerCase());
     if (proj) await openProject(proj.id);
-  } catch (e) { setMsg(`检测失败：${e.message}`); }
+  } catch (e) {
+    setBusy(false);
+    setMsg(`检测失败：${e.message}`);
+  }
 }
 $('btnAnalyze').onclick = () => analyzeSource(S.selPath);
+
+/** 刷新页面后重新挂接正在跑的检测（不再显示"永远的检测中"） */
+async function resumeRunningJob() {
+  try {
+    const data = await api('/api/jobs');
+    const job = (data.jobs || []).find((j) => (j.kind || 'analyze') === 'analyze');
+    if (!job) return;
+    setMsg(`接上正在进行的检测：${JOB_PHASE_LABEL[job.phase] || job.phase || ''}…`);
+    await trackJob(job.id, job.source);
+    await loadProjects();
+    if (job.project) {
+      const proj = S.projects.find((p) => p.id === job.project);
+      if (proj) await openProject(proj.id);
+    }
+  } catch { /* 忽略：旧版本服务没有 /api/jobs */ }
+}
+
+async function initLogLevel() {
+  try {
+    const info = await api('/api/log/level');
+    $('logLevel').value = info.level || 'info';
+  } catch { /* ignore */ }
+}
+$('logLevel').onchange = async (e) => {
+  try {
+    const r = await post('/api/log/level', { level: e.target.value });
+    setMsg(`控制台日志级别：${r.level}`);
+  } catch (err) { setMsg(`切换日志级别失败：${err.message}`); }
+};
 
 // ---------------- 批量 ----------------
 async function pollBatch(jid, kind) {
@@ -825,8 +914,10 @@ window.addEventListener('resize', drawTimeline);
 
 // ---------------- 启动 ----------------
 (async function boot() {
+  await initLogLevel();
   await loadPool();
   await loadProjects();
+  await resumeRunningJob();
   if (S.projects.length) {
     const params = new URLSearchParams(location.search);
     const pick = S.projects.find((p) => p.id === params.get('project')) || S.projects[0];
