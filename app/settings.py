@@ -1,6 +1,10 @@
 """用户设置（持久化到 <数据目录>/settings.json）。
 
-目前只有日志级别，后续设置项直接往里加。
+字段：
+- ``log_level``        日志级别（debug/detail/info/warning/error）
+- ``workspace``        工作区目录；null 表示默认 <数据目录>/workspace，否则为绝对路径
+- ``ai_fast``          长片 AI 加速（隔帧推理），默认关闭
+- ``t2_sample_limit``  启用 ai_fast 的帧数阈值，默认 20000
 """
 
 from __future__ import annotations
@@ -12,7 +16,12 @@ from pathlib import Path
 from app.paths import DATA_ROOT
 
 _lock = threading.Lock()
-DEFAULTS: dict = {"log_level": "info"}
+DEFAULTS: dict = {
+    "log_level": "info",
+    "workspace": None,
+    "ai_fast": False,
+    "t2_sample_limit": 20000,
+}
 
 
 def path() -> Path:
@@ -48,3 +57,13 @@ def update(**fields) -> dict:
         except OSError:
             pass
         return data
+
+
+def workspace_root(default: Path) -> Path:
+    """解析工作区目录：settings.workspace 优先，否则默认 <数据目录>/workspace。"""
+    custom = load().get("workspace")
+    if custom:
+        candidate = Path(str(custom))
+        if candidate.is_absolute():
+            return candidate
+    return Path(default)

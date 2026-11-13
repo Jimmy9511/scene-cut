@@ -43,3 +43,6 @@ desktop.ini
 
 # 发布产物
 release/
+
+# 数据目录指针（每台机器自己生成）
+data_root.txt

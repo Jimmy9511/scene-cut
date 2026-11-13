@@ -145,3 +145,22 @@ footer { border-top: 1px solid var(--line); background: var(--panel); }
 }
 .loglevel select:focus { outline: none; border-color: var(--accent); color: var(--text); }
 #btnAnalyze[disabled] { opacity: .55; cursor: not-allowed; }
+
+/* ---------- 设置按钮 / 设置面板 ---------- */
+.sideHead #btnSettings {
+  background: #0b0f14; color: var(--dim); border: 1px solid var(--line);
+  border-radius: 4px; width: 22px; height: 22px; cursor: pointer; line-height: 1; margin-left: auto;
+}
+.sideHead #btnSettings:hover { color: var(--text); border-color: var(--accent); }
+.sideHead #sideToggle { margin-left: 6px; }
+#settingsModal .modalBox { width: 700px; }
+#settingsModal .field { grid-template-columns: 84px 1fr auto; }
+.hint { color: var(--dim); font-size: 11px; padding-left: 92px; margin-top: -4px; }
+.checkLine { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
+.checkLine input { accent-color: var(--accent); }
+.ghostBtn {
+  background: transparent; color: var(--dim); border: 1px solid var(--line);
+  border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 12px;
+}
+.ghostBtn:hover { color: var(--text); border-color: var(--accent); }
+#settingsModal input[readonly] { color: var(--dim); background: #0b0f14; }

@@ -370,9 +370,18 @@ def main(argv: list[str] | None = None) -> int:
     use_browser = "--browser" in args
     no_open = "--no-open" in args
     log_level = _arg_value(args, "--log-level")
+    data_dir = _arg_value(args, "--data-dir")
+    data_arg = "--data-dir" in args or any(a.startswith("--data-dir=") for a in args)
 
     if _relaunch_unelevated():
         return 0
+
+    # 数据目录必须在导入 app.* 之前定下来（app.paths 导入时就会解析）
+    if data_dir:
+        os.environ["SCENECUT_DATA"] = data_dir
+        print(f"数据目录（--data-dir 覆盖）：{data_dir}", flush=True)
+    elif data_arg and not data_dir:
+        print("警告：--data-dir 缺少路径，已忽略", flush=True)
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     _prepare_bin()
@@ -399,10 +408,12 @@ def main(argv: list[str] | None = None) -> int:
     url = f"http://127.0.0.1:{port}/"
     print("=" * 60, flush=True)
     print(f"  scene-cut 已启动： {url}", flush=True)
-    print(f"  数据目录： {server.WS.root if server.WS else ''}", flush=True)
+    print(f"  数据目录： {server.DATA_ROOT}（来源：{getattr(server, 'DATA_ROOT_SOURCE', '?')}）", flush=True)
+    print(f"  工作区： {server.WS.root if server.WS else ''}", flush=True)
     print(f"  运行权限： {'管理员' if _is_admin() else '普通用户'}", flush=True)
     print("  关闭本窗口或按 Ctrl+C 退出", flush=True)
     print("=" * 60, flush=True)
+    restart_flag = Path(server.DATA_ROOT) / "restart.flag"
     shortcut = _write_url_shortcut(server.DATA_ROOT, url)
     print(f"  打不开窗口时，双击这个文件即可： {shortcut}", flush=True)
 
@@ -440,6 +451,23 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         while True:
+            if restart_flag.exists():
+                try:
+                    restart_flag.unlink()
+                except OSError:
+                    pass
+                print("收到重启请求（数据目录可能已变更），正在重新启动…", flush=True)
+                if host_proc is not None and host_proc.poll() is None:
+                    try:
+                        host_proc.terminate()
+                    except OSError:
+                        pass
+                time.sleep(0.6)
+                try:
+                    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+                except OSError as exc:
+                    print(f"自动重启失败：{exc}，请手动关闭后重新打开。", flush=True)
+                    return 0
             if host_proc is not None and host_proc.poll() is not None:
                 print("窗口已关闭，退出。", flush=True)
                 return 0

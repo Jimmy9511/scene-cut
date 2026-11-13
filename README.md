@@ -90,6 +90,38 @@ set SCENECUT_LOG_LEVEL=debug && scene-cut.exe          # 环境变量
 
 排障建议：**遇到检测卡住/很慢，先切到 `detail` 重跑一次**，控制台会显示当前阶段（`probe/t1/decode/t2/fuse`）、进度百分比与心跳，能直接看出卡在哪一步。
 
+## 数据目录与工作区
+
+数据分两层，都可以在界面里改（侧栏 **⚙ 设置**）：
+
+| 项 | 内容 | 生效方式 |
+|---|---|---|
+| **数据目录** | 日志、缓存、素材池索引、`settings.json`、WebView2 缓存 | 改完需**重启程序**（设置里有一键重启） |
+| **工作区目录** | 每个项目的文件夹（`project.json` / `analysis.json` / `clips` / `shots`） | **立即生效**，切换后可继续用旧项目（切回即可） |
+
+数据目录的解析优先级：
+
+```
+--data-dir 参数  →  SCENECUT_DATA 环境变量  →  指针文件 data_root.txt
+                 →  %LOCALAPPDATA%\SceneCut  →  程序目录\data  →  %TEMP%\SceneCut
+```
+
+`data_root.txt` 只有一行路径，放在 **exe 同目录**（源码模式在仓库根）。它必须留在稳定位置，不跟着数据搬走。
+
+改数据目录时勾选「迁移现有数据」会把 `workspace/`、`appdata/pool.json`、`logs/`、`settings.json` **复制**到新目录（旧数据保留，确认无误后可自行删除）；迁移失败或中途取消时指针不写入，仍使用旧目录。
+
+命令行等价物：
+
+```powershell
+scene-cut.exe --data-dir D:\SceneCut     # 临时指定数据目录（优先级最高）
+```
+
+## 性能
+
+- 解码走 **ffmpeg 单遍**（`scale` 到灰度尺寸后一次读入），比原 cv2 两次 resize 快约 **12 倍**（1080p 实测 128 fps → 1529 fps）；ffmpeg 不可用时自动回退
+- 长片可在设置里开「**AI 加速（抽帧）**」：超过阈值（默认 20000 帧）时隔帧推理再上采样，T2 时间大致减半，代价是渐变转场定位精度 ±N 帧（`analysis.json` 的 `run.t2_step` 有记录）
+- 基准脚本：`python tools/bench_detect.py <video> [--fast]`，会对比 ffmpeg/cv2 两个解码引擎的耗时与切点
+
 ## 构建
 
 ```powershell

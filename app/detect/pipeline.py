@@ -18,7 +18,7 @@ from app.detect import t1_scenedetect, t2_transnet
 from app.detect.fusion import build_shots, fuse
 from app.detect.probe import keyframes, probe
 from app.errors import Cancelled
-from app.media.decode import decode_frames
+from app.media.decode import decode_frames, decode_frames_ffmpeg
 
 PRESETS: dict[str, dict] = {
     "实拍短片": {
@@ -106,6 +106,8 @@ def analyze(
     should_cancel: Callable[[], bool] | None = None,
     include_keyframes: bool = False,
     probe_timeout: float = 60.0,
+    ai_fast: bool = False,
+    t2_sample_limit: int = 20000,
 ) -> dict:
     tag = "detect"
     path = Path(path).resolve()
@@ -171,31 +173,54 @@ def analyze(
     gray = np.empty((0, 54, 96), dtype=np.uint8)
     frame_total = n_meta
 
-    # 先定灰度尺寸需要帧数：未知时按 320x180 起，解码后如超预算再降采样
+    # 灰度尺寸：按帧数控制在 ~150MB 预算内
     gw, gh = _gray_size(frame_total or 5000)
-    rgb, gray = decode_frames(
-        str(path), (T2_W, T2_H), (gw, gh),
-        progress=on_decode, should_cancel=should_cancel,
-    )
+    decoder = os.getenv("SCENECUT_DECODER", "ffmpeg").strip().lower()
+    decode_engine = "cv2"
+    if decoder != "cv2":
+        try:
+            rgb, gray = decode_frames_ffmpeg(
+                str(path), (T2_W, T2_H), (gw, gh), total=frame_total,
+                progress=on_decode, should_cancel=should_cancel,
+            )
+            decode_engine = "ffmpeg"
+        except Cancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - ffmpeg 异常时回退 cv2
+            logmod.warn(tag, f"ffmpeg 解码失败，回退 cv2：{exc}")
+    if decode_engine == "cv2":
+        rgb, gray = decode_frames(
+            str(path), (T2_W, T2_H), (gw, gh),
+            progress=on_decode, should_cancel=should_cancel,
+        )
     decode_ms = int((time.perf_counter() - t0) * 1000)
     n = min(len(rgb), len(gray))
     rgb, gray = rgb[:n], gray[:n]
     sizes = {"w": gw, "h": gh}
-    logmod.info(tag, f"解码 完成 {decode_ms}ms 帧={n} 灰度={gw}x{gh}")
+    logmod.info(tag, f"解码 完成 {decode_ms}ms 帧={n} 灰度={gw}x{gh} 引擎={decode_engine}")
     emit("decode", 0.60, f"{n} 帧")
     check_cancel()
 
     # ---- T2：神经网络 ----
     probs = None
     t2_ms = 0
+    t2_step = 1
     if use_ai:
         emit("t2", 0.60, f"{n} 帧")
-        eta = n / 90.0  # CPU 实测约 90 帧/秒
-        logmod.info(tag, f"t2 开始 {n} 帧（预计 ≈{eta:.0f}s，CPU 约 90 帧/秒）")
+        t2_input = rgb
+        if ai_fast and n > t2_sample_limit:
+            t2_step = max(1, -(-n // max(1, t2_sample_limit)))   # ceil
+            t2_input = rgb[::t2_step]
+            logmod.warn(tag, f"长片快速模式：每 {t2_step} 帧取 1（{len(t2_input)}/{n} 帧），"
+                             f"渐变转场定位误差 ≤ {t2_step} 帧")
+        eta = len(t2_input) / 90.0  # CPU 实测约 90 帧/秒
+        logmod.info(tag, f"t2 开始 {len(t2_input)} 帧（预计 ≈{eta:.0f}s，CPU 约 90 帧/秒）")
         t0 = time.perf_counter()
         try:
             with _Heartbeat(tag, "t2"):
-                probs = t2_transnet.predict_probs(rgb, device="auto")
+                probs = t2_transnet.predict_probs(t2_input, device="auto")
+            if t2_step > 1:
+                probs = np.repeat(probs, t2_step)[:n]
         except ImportError:
             logmod.warn(tag, "未安装 torch，跳过 TransNetV2 渐变检测（本次仅 T1 统计检测）")
             probs = None
@@ -237,6 +262,9 @@ def analyze(
                            "probe": probe_ms, "decode": decode_ms},
             "device": t2_transnet.device() if use_ai else "n/a",
             "gray_size": sizes,
+            "decode_engine": decode_engine,
+            "t2_step": t2_step,
+            "ai_fast": bool(ai_fast),
         },
         "shots": shots,
         "clips": [

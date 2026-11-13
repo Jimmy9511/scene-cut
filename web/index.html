@@ -14,6 +14,7 @@
   <aside id="sidebar">
     <div class="sideHead">
       <span class="wsName">scene-cut</span>
+      <button id="btnSettings" title="设置（数据目录 / 工作区 / 日志）">⚙</button>
       <button id="sideToggle" title="收起侧栏">‹</button>
     </div>
 
@@ -85,6 +86,55 @@
       </div>
     </aside>
   </main>
+</div>
+
+<div id="settingsModal" class="modal hidden">
+  <div class="modalBox">
+    <div class="modalHead">
+      <span>设置</span>
+      <button id="setClose" title="关闭">✕</button>
+    </div>
+    <div class="modalBody">
+      <div class="field"><label>工作区目录</label>
+        <input id="setWorkspace" readonly />
+        <button id="setWorkspacePick" class="ghostBtn">更改…</button>
+      </div>
+      <div class="hint">项目文件夹（project.json / clips / logs）写在这里，改完立即生效。</div>
+
+      <div class="field"><label>数据目录</label>
+        <input id="setDataRoot" readonly />
+        <button id="setDataRootPick" class="ghostBtn">更改…</button>
+      </div>
+      <div class="hint" id="setDataInfo">日志、缓存、素材池索引、设置都在这里；改动需要重启程序。</div>
+      <label class="checkLine"><input type="checkbox" id="setMigrate" checked /> 迁移现有数据（复制到新目录，旧数据保留）</label>
+
+      <div class="field"><label>长片 AI 加速</label>
+        <label class="checkLine"><input type="checkbox" id="setAiFast" /> 开启（超过阈值时隔帧推理）</label>
+      </div>
+      <div class="field"><label>抽帧阈值</label>
+        <input id="setSampleLimit" type="number" min="1000" max="500000" step="1000" />
+        <span class="dim">帧；超过才抽帧</span>
+      </div>
+
+      <div class="field"><label>日志级别</label>
+        <select id="setLogLevel">
+          <option value="debug">debug</option>
+          <option value="detail">detail</option>
+          <option value="info">info</option>
+          <option value="warning">warning</option>
+          <option value="error">error</option>
+        </select>
+      </div>
+
+      <div id="setMsg" class="msg"></div>
+    </div>
+    <div class="modalFoot">
+      <button id="setOpenData">打开数据目录</button>
+      <button id="setRestart" title="需要重启才能让数据目录生效">重启程序</button>
+      <button id="setCancel">关闭</button>
+      <button id="setSave" class="primary">保存</button>
+    </div>
+  </div>
 </div>
 
 <div id="exportModal" class="modal hidden">

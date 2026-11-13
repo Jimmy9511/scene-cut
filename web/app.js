@@ -671,6 +671,112 @@ $('logLevel').onchange = async (e) => {
   } catch (err) { setMsg(`切换日志级别失败：${err.message}`); }
 };
 
+// ---------------- 设置（数据目录 / 工作区 / 日志） ----------------
+const S2 = { settings: null };
+const DATA_SOURCE_LABEL = {
+  env: '环境变量 / 启动参数', pointer: '已自定义（指针文件）', default: '默认位置', fallback: '回退位置',
+};
+
+function setSetMsg(t) { $('setMsg').textContent = t || ''; }
+
+async function refreshSettings() {
+  const s = await api('/api/settings');
+  S2.settings = s;
+  $('setWorkspace').value = s.workspace;
+  $('setDataRoot').value = s.data_root;
+  $('setDataInfo').textContent =
+    `来源：${DATA_SOURCE_LABEL[s.data_root_source] || s.data_root_source} · 指针文件：${s.data_root_pointer}`;
+  $('setAiFast').checked = !!s.ai_fast;
+  $('setSampleLimit').value = s.t2_sample_limit;
+  $('setLogLevel').value = s.log_level;
+  $('logLevel').value = s.log_level;
+  return s;
+}
+
+async function openSettings() {
+  $('settingsModal').classList.remove('hidden');
+  setSetMsg('');
+  try { await refreshSettings(); } catch (e) { setSetMsg(`读取设置失败：${e.message}`); }
+}
+function closeSettings() { $('settingsModal').classList.add('hidden'); }
+$('btnSettings').onclick = openSettings;
+$('setClose').onclick = closeSettings;
+$('setCancel').onclick = closeSettings;
+
+async function pickDir() {
+  const res = await post('/api/pick', { mode: 'dir' });
+  const p = (res.paths || [])[0];
+  return p || null;
+}
+
+$('setWorkspacePick').onclick = async () => {
+  try {
+    const p = await pickDir();
+    if (!p) { setSetMsg('已取消'); return; }
+    setSetMsg(`切换工作区到 ${p} …`);
+    const r = await post('/api/settings', { workspace: p });
+    S2.settings = r;
+    await refreshSettings();
+    await loadProjects();
+    setSetMsg(`工作区已切换：${r.workspace}`);
+  } catch (e) { setSetMsg(`切换失败：${e.message}`); }
+};
+
+$('setDataRootPick').onclick = async () => {
+  try {
+    const p = await pickDir();
+    if (!p) { setSetMsg('已取消'); return; }
+    $('setDataRoot').value = p;
+    setSetMsg('已选择新数据目录：点「保存」写入并迁移，再点「重启程序」生效');
+  } catch (e) { setSetMsg(`选择失败：${e.message}`); }
+};
+
+$('setSave').onclick = async () => {
+  try {
+    setSetMsg('保存中…');
+    await post('/api/settings', {
+      ai_fast: $('setAiFast').checked,
+      t2_sample_limit: Number($('setSampleLimit').value || 20000),
+      log_level: $('setLogLevel').value,
+    });
+    const wanted = ($('setDataRoot').value || '').trim();
+    if (S2.settings && wanted && wanted !== S2.settings.data_root) {
+      const r = await post('/api/settings/data-dir', { path: wanted, migrate: $('setMigrate').checked });
+      S2.settings = r.settings;
+      await refreshSettings();
+      const files = r.stats && r.stats.files ? `，已复制 ${r.stats.files} 个文件` : '，未迁移旧数据';
+      setSetMsg(`数据目录已指向 ${r.target}${files}。点「重启程序」生效`);
+      return;
+    }
+    await refreshSettings();
+    setSetMsg('已保存');
+  } catch (e) { setSetMsg(`保存失败：${e.message}`); }
+};
+
+$('setRestart').onclick = async () => {
+  try {
+    setSetMsg('正在重启…');
+    await post('/api/app/restart', {});
+    waitForRestart();
+  } catch (e) { setSetMsg(`重启失败：${e.message}`); }
+};
+
+$('setOpenData').onclick = async () => {
+  try { await post('/api/app/reveal', {}); } catch (e) { setSetMsg(`打开失败：${e.message}`); }
+};
+
+async function waitForRestart() {
+  for (let i = 0; i < 90; i += 1) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const r = await fetch('/', { cache: 'no-store' });
+      if (r.ok) { location.reload(); return; }
+    } catch { /* 服务还没起来 */ }
+    setSetMsg(`等待服务重启… ${i + 1}s`);
+  }
+  setSetMsg('服务没有自动回来，请手动重新打开程序');
+}
+
 // ---------------- 批量 ----------------
 async function pollBatch(jid, kind) {
   const label = kind === 'analyze' ? '批量检测' : '批量导出';
@@ -915,6 +1021,7 @@ window.addEventListener('resize', drawTimeline);
 // ---------------- 启动 ----------------
 (async function boot() {
   await initLogLevel();
+  refreshSettings().catch(() => {});
   await loadPool();
   await loadProjects();
   await resumeRunningJob();
@@ -936,4 +1043,6 @@ window.addEventListener('resize', drawTimeline);
   } else {
     setMsg('把素材拖进左侧素材池，或点「选目录 / 选文件」');
   }
+  const params3 = new URLSearchParams(location.search);
+  if (params3.get('settings') === '1') openSettings();
 })().catch((err) => setMsg(`启动失败：${err.message}`));

@@ -58,6 +58,10 @@ jobs:
         shell: pwsh
         run: python tools/make_fixtures.py --out tests/fixtures/synthetic
 
+      - name: 单元测试（含解码一致性，需 ffmpeg 与素材）
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
       - name: 冒烟检测（硬切素材）
         shell: pwsh
         run: |
@@ -89,6 +93,27 @@ jobs:
             $jobs = (Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8877/api/jobs").Content
             Write-Host "jobs:", $jobs
             if ($jobs -notmatch '"jobs"') { throw "/api/jobs 接口异常" }
+
+            $settings = (Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8877/api/settings").Content
+            Write-Host "settings:", $settings
+            foreach ($key in @('"data_root"','"workspace"','"ai_fast"','"t2_sample_limit"','"data_root_source"')) {
+              if ($settings -notmatch $key) { throw "/api/settings 缺少字段 $key" }
+            }
+
+            # 切换工作区到临时目录，并校验非法路径被拒
+            $wsDir = Join-Path $PWD "out\ws-switch"
+            $body = @{ workspace = $wsDir } | ConvertTo-Json
+            $changed = (Invoke-WebRequest -UseBasicParsing -Method Post -Uri "http://127.0.0.1:8877/api/settings" -Body $body -ContentType "application/json").Content
+            Write-Host "workspace switch:", $changed
+            if ($changed -notmatch 'ws-switch') { throw "工作区切换未生效" }
+
+            $bad = @{ workspace = $env:SCENECUT_DATA } | ConvertTo-Json
+            try {
+              Invoke-WebRequest -UseBasicParsing -Method Post -Uri "http://127.0.0.1:8877/api/settings" -Body $bad -ContentType "application/json" | Out-Null
+              throw "非法工作区（数据目录本身）本应被拒绝"
+            } catch {
+              if ($_.Exception.Response.StatusCode.value__ -ne 400) { throw "非法工作区应返回 400" }
+            }
             Get-Content out\server.log | Select-Object -Last 12
           } finally {
             if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }

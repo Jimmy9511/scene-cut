@@ -23,10 +23,12 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from app import __version__
 from app import log as logmod
+from app import settings as settingsmod
 from app.detect.probe import probe as probe_media
 from app.errors import Cancelled
 from app.media.frameservice import get_service
-from app.paths import DATA_ROOT, WEB_DIR
+from app.paths import DATA_ROOT, DATA_ROOT_SOURCE, WEB_DIR, pointer_path, write_pointer
+from app.store import migrate as migratemod
 from app.store.pool import MEDIA_EXT, Pool
 from app.store.workspace import Workspace
 
@@ -35,6 +37,7 @@ WEB = WEB_DIR
 
 POOL: Pool | None = None
 WS: Workspace | None = None
+HTTPD: ThreadingHTTPServer | None = None
 PROBES: dict[str, dict] = {}
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
@@ -190,6 +193,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"jobs": running})
         if path == "/api/log/level":
             return self._json({"level": logmod.get_level(), "levels": list(logmod.LEVELS)})
+        if path == "/api/settings":
+            return self._settings_get()
         if path == "/api/analysis":
             return self._analysis(qs)
         if path == "/api/frame":
@@ -228,6 +233,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/export": self._export,
             "/api/job/cancel": self._job_cancel,
             "/api/log/level": self._log_level,
+            "/api/settings": self._settings_update,
+            "/api/settings/data-dir": self._settings_data_dir,
+            "/api/app/restart": self._app_restart,
+            "/api/app/reveal": self._app_reveal,
         }
         h = handlers.get(path)
         if not h:
@@ -245,6 +254,144 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": str(exc), "levels": list(logmod.LEVELS)}, 400)
         logmod.info("log", f"日志级别切换为 {level}")
         return self._json({"level": level, "levels": list(logmod.LEVELS)})
+
+    # ---------- 设置 / 数据目录 ----------
+    def _settings_payload(self) -> dict:
+        data = settingsmod.load()
+        workspace = settingsmod.workspace_root(DATA_ROOT / "workspace")
+        return {
+            "version": __version__,
+            "data_root": str(DATA_ROOT),
+            "data_root_source": DATA_ROOT_SOURCE,
+            "data_root_pointer": str(pointer_path()),
+            "workspace": str(workspace),
+            "workspace_custom": bool(data.get("workspace")),
+            "pool": str(POOL.file) if POOL is not None else "",
+            "log_level": logmod.get_level(),
+            "levels": list(logmod.LEVELS),
+            "ai_fast": bool(data.get("ai_fast")),
+            "t2_sample_limit": int(data.get("t2_sample_limit") or 20000),
+        }
+
+    def _settings_get(self):
+        return self._json(self._settings_payload())
+
+    def _analyze_running(self) -> bool:
+        with JOBS_LOCK:
+            return any(j.get("status") == "running" and (j.get("kind") or "analyze") == "analyze"
+                       for j in JOBS.values())
+
+    def _settings_update(self):
+        global WS
+        body = self._body()
+        changes: dict = {}
+
+        if "workspace" in body:
+            raw = str(body.get("workspace") or "").strip()
+            if self._analyze_running():
+                return self._json({"error": "有检测正在进行，请先取消或等待完成"}, 409)
+            try:
+                if raw:
+                    target = migratemod.validate_dir(raw, label="工作区目录")
+                    if target == Path(DATA_ROOT).resolve():
+                        return self._json({"error": "工作区不能直接用数据目录本身"}, 400)
+                    changes["workspace"] = str(target)
+                else:
+                    target = Path(DATA_ROOT) / "workspace"
+                    changes["workspace"] = None
+                WS = Workspace(target)
+                logmod.info("settings", f"工作区切换为 {WS.root}")
+            except ValueError as exc:
+                return self._json({"error": str(exc)}, 400)
+            except OSError as exc:
+                return self._json({"error": f"切换工作区失败：{exc}"}, 500)
+
+        if "ai_fast" in body:
+            changes["ai_fast"] = bool(body.get("ai_fast"))
+        if "t2_sample_limit" in body:
+            try:
+                limit = int(body.get("t2_sample_limit"))
+            except (TypeError, ValueError):
+                return self._json({"error": "抽帧阈值必须是整数"}, 400)
+            if not 1000 <= limit <= 500000:
+                return self._json({"error": "抽帧阈值需在 1000–500000 之间"}, 400)
+            changes["t2_sample_limit"] = limit
+        if "log_level" in body:
+            try:
+                changes["log_level"] = logmod.set_level(str(body.get("log_level")))
+            except ValueError as exc:
+                return self._json({"error": str(exc)}, 400)
+
+        if changes:
+            settingsmod.update(**changes)
+            logmod.info("settings", f"设置已更新：{changes}")
+        return self._json(self._settings_payload())
+
+    def _settings_data_dir(self):
+        global WS
+        body = self._body()
+        raw = str(body.get("path") or "").strip()
+        migrate = bool(body.get("migrate"))
+        if self._analyze_running():
+            return self._json({"error": "有检测正在进行，请先取消或等待完成"}, 409)
+        try:
+            target = migratemod.validate_dir(
+                raw, label="数据目录", current_root=DATA_ROOT,
+                other=WS.root if WS else None)
+        except ValueError as exc:
+            return self._json({"error": str(exc)}, 400)
+
+        stats = {}
+        if migrate:
+            try:
+                stats = migratemod.migrate(DATA_ROOT, target)
+            except OSError as exc:
+                logmod.error("settings", f"迁移失败：{exc}")
+                return self._json({"error": f"迁移失败（已复制部分保留在原处，仍使用旧目录）：{exc}"}, 500)
+
+        try:
+            write_pointer(target)
+        except OSError as exc:
+            return self._json({"error": f"无法写入指针文件（{pointer_path()}）：{exc}"}, 500)
+
+        logmod.warn("settings", f"数据目录已指向 {target}（迁移={'是' if migrate else '否'}），需重启生效")
+        return self._json({"ok": True, "requires_restart": True, "target": str(target),
+                           "stats": stats, "settings": self._settings_payload()})
+
+    def _app_restart(self):
+        flag = Path(DATA_ROOT) / "restart.flag"
+        try:
+            flag.write_text(str(time.time()), encoding="utf-8")
+        except OSError as exc:
+            return self._json({"error": f"无法写入重启标记：{exc}"}, 500)
+        logmod.warn("app", "收到重启请求，服务即将关闭（桌面版会自动重新拉起）")
+
+        def _stop() -> None:
+            time.sleep(0.4)
+            if HTTPD is not None:
+                HTTPD.shutdown()
+
+        threading.Thread(target=_stop, daemon=True).start()
+        return self._json({"ok": True,
+                           "manual_restart_hint": "若 10 秒内没有自动回到界面，请手动重新打开程序"})
+
+    def _app_reveal(self):
+        body = self._body()
+        raw = str(body.get("path") or "").strip() or str(DATA_ROOT)
+        target = Path(raw).resolve()
+        root = Path(DATA_ROOT).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            return self._json({"error": "只能打开数据目录内的路径"}, 400)
+        if not target.exists():
+            return self._json({"error": f"路径不存在：{target}"}, 404)
+        try:
+            subprocess.Popen(["explorer", str(target)])
+        except OSError as exc:
+            return self._json({"error": f"无法调用资源管理器：{exc}"}, 500)
+        return self._json({"ok": True, "path": str(target)})
+
 
     def _job_cancel(self):
         body = self._body()
@@ -361,6 +508,8 @@ class Handler(BaseHTTPRequestHandler):
         jid = uuid.uuid4().hex[:12]
         preset = str(body.get("preset") or "实拍短片")
         use_ai = bool(body.get("ai", True))
+        ai_fast = bool(settingsmod.get("ai_fast"))
+        t2_limit = int(settingsmod.get("t2_sample_limit") or 20000)
         job = {"id": jid, "kind": "analyze", "project": pid, "source": src,
                "status": "running", "phase": "queued", "progress": 0.0,
                "message": "排队中", "started": time.time(), "elapsed_ms": 0}
@@ -369,9 +518,10 @@ class Handler(BaseHTTPRequestHandler):
             ACTIVE_SOURCES[src] = jid
             CANCELS[jid] = threading.Event()
         logmod.info("detect", f"开始检测 {Path(src).name} -> 项目 {project['name']} "
-                              f"preset={preset} ai={'on' if use_ai else 'off'} job={jid}")
+                              f"preset={preset} ai={'on' if use_ai else 'off'} "
+                              f"fast={'on' if ai_fast else 'off'} job={jid}")
         threading.Thread(target=_run_analysis, daemon=True,
-                         args=(jid, pid, src, preset, use_ai, False)).start()
+                         args=(jid, pid, src, preset, use_ai, False, ai_fast, t2_limit)).start()
         return self._json({"job": job, "project": project, "reused": False})
 
     def _batch_analyze(self):
@@ -720,15 +870,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _analyze_sync(pid: str, source: str, preset: str, use_ai: bool,
-                  progress=None, should_cancel=None) -> dict:
+                  progress=None, should_cancel=None,
+                  ai_fast: bool = False, t2_sample_limit: int = 20000) -> dict:
     from app.detect.pipeline import analyze
 
     WS.update(pid, status="analyzing", error=None)
-    WS.log(pid, f"start analyze source={source} preset={preset} ai={use_ai}")
+    WS.log(pid, f"start analyze source={source} preset={preset} ai={use_ai} fast={ai_fast}")
     directory = WS.dir_of(pid)
     result = analyze(source, directory, asset_id="analysis",
                      preset_name=preset, use_ai=use_ai,
-                     progress=progress, should_cancel=should_cancel)
+                     progress=progress, should_cancel=should_cancel,
+                     ai_fast=ai_fast, t2_sample_limit=t2_sample_limit)
     WS.update(pid, status="analyzed", analyzed_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
     WS.log(pid, f"done shots={result['shots']} cuts={len(result['cuts'])} "
                 f"elapsed={result['elapsed_ms']}ms")
@@ -765,7 +917,8 @@ def _finish_job(jid: str, source: str, **fields) -> None:
 
 
 def _run_analysis(jid: str, pid: str, source: str, preset: str, use_ai: bool,
-                  cancelled: bool = False) -> None:
+                  cancelled: bool = False, ai_fast: bool = False,
+                  t2_sample_limit: int = 20000) -> None:
     t0 = time.perf_counter()
     event = CANCELS.get(jid) or threading.Event()
 
@@ -787,7 +940,8 @@ def _run_analysis(jid: str, pid: str, source: str, preset: str, use_ai: bool,
         acquired = True
         result = _analyze_sync(pid, source, preset, use_ai,
                                progress=_job_progress(JOBS.get(jid, {}), t0),
-                               should_cancel=should_cancel)
+                               should_cancel=should_cancel,
+                               ai_fast=ai_fast, t2_sample_limit=t2_sample_limit)
         _finish_job(jid, source, status="done", phase="done", progress=1.0,
                     message="完成", shots=result["shots"],
                     elapsed_ms=int((time.perf_counter() - t0) * 1000))
@@ -826,7 +980,9 @@ def _run_batch_analyze(job: dict, sources: list[str], preset: str, use_ai: bool,
         try:
             project = WS.find_by_source(src) or WS.create(src)
             item["project"] = project["id"]
-            result = _analyze_sync(project["id"], src, preset, use_ai)
+            result = _analyze_sync(project["id"], src, preset, use_ai,
+                                   ai_fast=bool(settingsmod.get("ai_fast")),
+                                   t2_sample_limit=int(settingsmod.get("t2_sample_limit") or 20000))
             item.update(status="done", shots=result["shots"],
                         elapsed_ms=result["elapsed_ms"])
             logmod.info("batch", f"[{index + 1}/{len(sources)}] 完成 {Path(src).name} "
@@ -925,9 +1081,10 @@ def _self_check() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global POOL, WS
+    global POOL, WS, HTTPD
+    default_ws = settingsmod.workspace_root(DATA_ROOT / "workspace")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--workspace", default=str(DATA_ROOT / "workspace"))
+    ap.add_argument("--workspace", default=str(default_ws))
     ap.add_argument("--pool", default=str(DATA_ROOT / "appdata" / "pool.json"))
     ap.add_argument("--port", type=int, default=8768)
     ap.add_argument("--host", default="127.0.0.1")
@@ -937,14 +1094,16 @@ def main(argv: list[str] | None = None) -> int:
 
     level = logmod.setup(args.log_level, log_dir=DATA_ROOT)
     logmod.info("app", f"scene-cut {__version__} 启动（日志级别={level}，"
-                       f"数据目录={DATA_ROOT}）")
+                       f"数据目录={DATA_ROOT}，来源={DATA_ROOT_SOURCE}）")
 
     POOL = Pool(Path(args.pool))
     WS = Workspace(Path(args.workspace))
+    logmod.info("app", f"工作区={WS.root}（{'自定义' if settingsmod.get('workspace') else '默认'}）")
     _recover_stale_projects()
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
-    logmod.info("app", f"监听 http://{args.host}:{args.port}/  workspace={WS.root}  "
+    HTTPD = httpd
+    logmod.info("app", f"监听 http://{args.host}:{args.port}/  "
                        f"素材根={len(POOL.roots)}  项目={len(WS.list_projects())}")
     print(f"scene-cut: http://{args.host}:{args.port}/  workspace={WS.root}  "
           f"pool_roots={len(POOL.roots)}  projects={len(WS.list_projects())}", flush=True)
