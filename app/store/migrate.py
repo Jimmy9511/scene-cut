@@ -102,6 +102,10 @@ def migrate(src_root: Path, dst_root: Path) -> dict:
             ws = data.get("workspace")
             if ws:
                 ws_path = Path(str(ws))
+                try:
+                    ws_path = ws_path.resolve()      # 兼容 8.3 短路径 / 符号链接
+                except OSError:
+                    pass
                 if _inside(ws_path, src_root):
                     new_ws = dst_root / ws_path.relative_to(src_root)
                     data["workspace"] = str(new_ws)

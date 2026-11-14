@@ -10,13 +10,19 @@ import shutil
 import unittest
 from pathlib import Path
 
-import numpy as np
-
-from app.media.decode import decode_frames, decode_frames_ffmpeg
+try:                                     # lint 环境不一定装 numpy/opencv
+    import numpy as np
+    from app.media.decode import decode_frames, decode_frames_ffmpeg
+    _READY, _WHY = True, ""
+except Exception as _exc:                # noqa: BLE001
+    np = None                            # type: ignore[assignment]
+    decode_frames = decode_frames_ffmpeg = None  # type: ignore[assignment]
+    _READY, _WHY = False, f"缺少依赖：{_exc}"
 
 FIXTURE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "synthetic" / "hardcuts.mp4"
 
 
+@unittest.skipUnless(_READY, _WHY)
 @unittest.skipUnless(shutil.which("ffmpeg"), "需要 ffmpeg")
 @unittest.skipUnless(FIXTURE.exists(), "缺少合成素材，先运行 tools/make_fixtures.py")
 class DecodeParityTests(unittest.TestCase):

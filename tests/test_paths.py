@@ -72,8 +72,8 @@ class ValidateDirTests(unittest.TestCase):
 class MigrateTests(unittest.TestCase):
     def test_copies_and_rewrites_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            src = Path(tmp) / "old"
-            dst = Path(tmp) / "new"
+            src = (Path(tmp) / "old").resolve()
+            dst = (Path(tmp) / "new").resolve()
             (src / "workspace" / "proj").mkdir(parents=True)
             (src / "workspace" / "proj" / "project.json").write_text("{}", encoding="utf-8")
             (src / "appdata").mkdir()
