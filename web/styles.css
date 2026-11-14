@@ -164,3 +164,22 @@ footer { border-top: 1px solid var(--line); background: var(--panel); }
 }
 .ghostBtn:hover { color: var(--text); border-color: var(--accent); }
 #settingsModal input[readonly] { color: var(--dim); background: #0b0f14; }
+
+/* ---------- 设置面板：对齐修正 ---------- */
+.field input[type="checkbox"] {
+  width: auto; margin: 0; padding: 0; flex: 0 0 auto;
+  accent-color: var(--accent); transform: translateY(1px);
+}
+#settingsModal .field .checkLine {
+  grid-column: 2 / span 2; justify-content: flex-start; color: var(--text); font-size: 12px;
+}
+#settingsModal .field .checkLine input[type="checkbox"] { margin-right: 2px; }
+#settingsModal .modalBody label.checkLine { margin: 2px 0 0 0; }
+
+/* 侧栏头部按钮：图标居中 */
+.sideHead button {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; font-size: 13px; line-height: 1; text-align: center;
+}
+.sideHead #btnSettings { font-size: 14px; color: var(--dim); }
+.sideHead #btnSettings:hover { color: var(--text); }

@@ -12,6 +12,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,12 +41,31 @@ def main() -> int:
         str(ROOT / "host" / "WindowHost.cs"),
     ]
     print(" ".join(f'"{c}"' if " " in c else c for c in cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    print(proc.stdout.strip())
-    if proc.stderr.strip():
-        print(proc.stderr.strip())
-    if proc.returncode != 0 or not exe.exists():
-        print("编译失败")
+    proc = None
+    for attempt in range(1, 4):
+        # csc 偶尔会在"目录刚被 PyInstaller 重建"时拿不到写权限（杀软/索引占用），重试即可
+        try:
+            if exe.exists():
+                exe.unlink()
+        except OSError:
+            pass
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
+        print(proc.stdout.strip())
+        if proc.stderr.strip():
+            print(proc.stderr.strip())
+        if proc.returncode == 0 and exe.exists():
+            break
+        print(f"编译失败（第 {attempt} 次），1.5s 后重试…")
+        time.sleep(1.5)
+    if proc is None or proc.returncode != 0 or not exe.exists():
+        print("编译失败：csc 连续 3 次未能写出 exe")
+        print("提示：若在受限沙箱/杀软环境下遇到 CS0016，可先用普通终端手动执行：")
+        print(f'  "{CSC}" /nologo /target:winexe /platform:x64 /optimize+ '
+              f'/out:"{OUT_DIR / "scene-cut-window.exe"}" "{CORE}" "{WINFORMS}" '
+              f'/r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll '
+              f'"{ROOT / "host" / "WindowHost.cs"}"')
+        print(f'然后把 {CORE.name} / {WINFORMS.name} / {LOADER.name} 复制到 {OUT_DIR}')
         return 1
 
     for src, name in ((CORE, CORE.name), (WINFORMS, WINFORMS.name), (LOADER, LOADER.name)):
